@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: onebookwiki
+Version: 0.1.0
+Summary: Evidence-grounded, retrieval-first analysis of a single book
+Requires-Python: >=3.10
+Provides-Extra: rag
+Requires-Dist: tiktoken>=0.7; extra == "rag"
+Requires-Dist: numpy>=1.26; extra == "rag"
+Requires-Dist: faiss-cpu>=1.8; extra == "rag"
+Provides-Extra: local-embeddings
+Requires-Dist: sentence-transformers>=3.0; extra == "local-embeddings"
+Provides-Extra: cloud
+Requires-Dist: openai>=1.0; extra == "cloud"
+Requires-Dist: pymupdf>=1.24; extra == "cloud"
+Requires-Dist: json-repair>=0.30; extra == "cloud"
+Provides-Extra: all
+Requires-Dist: tiktoken>=0.7; extra == "all"
+Requires-Dist: numpy>=1.26; extra == "all"
+Requires-Dist: faiss-cpu>=1.8; extra == "all"
+Requires-Dist: sentence-transformers>=3.0; extra == "all"
+Requires-Dist: openai>=1.0; extra == "all"
+Requires-Dist: pymupdf>=1.24; extra == "all"
+Requires-Dist: json-repair>=0.30; extra == "all"

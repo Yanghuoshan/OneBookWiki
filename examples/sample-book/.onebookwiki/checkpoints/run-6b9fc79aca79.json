@@ -1,0 +1,29 @@
+{
+  "run_id": "6b9fc79aca79",
+  "status": "pending",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "pending",
+      "attempts": 0,
+      "input_tokens": 161
+    },
+    "chapter:2": {
+      "node_id": "chapter:2",
+      "status": "pending",
+      "attempts": 0,
+      "input_tokens": 162
+    },
+    "rollup:1-2": {
+      "node_id": "rollup:1-2",
+      "status": "pending",
+      "attempts": 0
+    },
+    "book:synthesis": {
+      "node_id": "book:synthesis",
+      "status": "pending",
+      "attempts": 0,
+      "input_tokens": 152
+    }
+  }
+}

@@ -1,0 +1,143 @@
+{
+  "chapter": 2,
+  "title": "Fou Ren - Aleksandr Zvezdov",
+  "purpose": "考察否认（disavowal）的精神分析概念及其社会维度，以曼诺尼（Octave Mannoni）的公式'Je sais bien, mais quand même'（'我很清楚，但尽管如此'）为核心框架，探讨否认如何作为信念的基础在社会制度、意识形态和创伤性知识中运作。",
+  "executive_summary": "本章以否认的精神分析理论为主线，从弗洛伊德对虚假识认（fausse reconnaissance）的讨论出发，引入曼诺尼关于否认的奠基性文本及其核心公式。通过霍皮印第安人卡奇纳（Katcina）仪式的经典案例，揭示信念并非存在于知识之前，而是以创伤性知识为条件、与知识同时建立的社会制度性产物。本章还区分了恋物癖式否认与神经症式否认，探讨否认从个体心理向社会结构的扩展，以及欺骗恐惧与本体论焦虑之间的深层关联。",
+  "core_thesis": "信念不是前理性或前知识的孩童式轻信，而是以创伤性知识为内在条件的结构性产物；否认通过将信念转移至外部客体（物神或社会制度）而运作，从而使主体能够在'很清楚'的同时继续'尽管如此'地相信。",
+  "argument_map": "1) 从弗洛伊德的虚假识认和即视感出发，界定否认的心理机制——通过仓促识别将创伤性之物非现实化（C2E1）。2) 将否认扩展到社会维度：否认不仅是个人防御，更是内建于社会经济关系与意识形态中的结构性现象（C2E2）。3) 引入曼诺尼公式作为否认的核心表述，指出信念与知识并非对立，而是以知识为前提（C2E6-E8）。4) 通过霍皮人卡奇纳案例具体演示：创伤性知识（卡奇纳不是神灵而是戴着面具的父亲）如何成为信念（相信卡奇纳的神秘存在）的条件（C2E9-E12）。5) 区分恋物癖式否认（成功外化于物神）与神经症式否认（持续的内部冲突）（C2E7-E8）。6) 引入另一个创伤维度：他者（父母/权威）的欺骗性，涉及象征性阉割与信任的根本动摇（C2E15-E17）。7) 连接弗洛伊德-拉康的菲勒斯概念：否认从根本上关联于可能性的缺失（C2E13-E14）。8) 探讨当代语境下欺骗恐惧与否认的关系（C2E3-E5）。",
+  "key_concepts": [
+    "否认（disavowal）——曼诺尼公式'Je sais bien, mais quand même'（'我很清楚，但尽管如此'）",
+    "虚假识认（fausse reconnaissance）与即视感（déjà vu）",
+    "恋物癖式否认（fetishist disavowal）与物神（fetish）",
+    "神经症式否认与持续的内部冲突",
+    "信念（belief）作为创伤性知识的产物",
+    "象征性阉割（symbolic castration）",
+    "菲勒斯（phallus）作为'非物之物'",
+    "作为社会制度功能的大他者（big Other）的欺骗性",
+    "作为否认形式的阴谋论与欺骗恐惧",
+    "入会仪式（initiation）作为受控创伤的社会机制"
+  ],
+  "evidence_examples": [
+    {
+      "text": "弗洛伊德讨论虚假识认现象时指出，患者在报告一个事实后说'但我已经告诉过你了'——而分析师确信这是他第一次听到这个故事。某种具有创伤性/破坏性的东西被仓促知识所拦截并使之非现实化，我们视之为属于其他时间性。",
+      "evidence_ids": [
+        "C2E1"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "塔拉耶斯瓦描述发现卡奇纳舞者实为戴面具的父亲和叔叔时的创伤：'当我看到我自己的父亲时，我感觉最糟。'",
+      "evidence_ids": [
+        "C2E10"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "恋物癖式否认将信念转移到物神客体上，主体'从每一种信念——甚至无意识的信念——中解脱了，因为是他的物神在替我信仰'。",
+      "evidence_ids": [
+        "C2E7"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "在霍皮案例中，孩子们在被引导获得知识（卡奇纳实为戴面具的父亲叔叔）后，才开始相信神灵的神秘、无形存在。信念严格地与知识相关，即使与之保持距离。",
+      "evidence_ids": [
+        "C2E12"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "发现不仅关乎卡奇纳不存在，还关乎'他者（Other）——作为知识和权威所在地的父母——可能是欺骗性的、不可信的这一揭露'。",
+      "evidence_ids": [
+        "C2E15"
+      ],
+      "kind": "observation"
+    }
+  ],
+  "important_quotations": [
+    {
+      "text": "Je sais bien, mais quand même——'我很清楚，但尽管如此……'。",
+      "evidence_ids": [
+        "C2E6"
+      ],
+      "kind": "quote"
+    },
+    {
+      "text": "恋物癖者永远不会说'但尽管如此'，因为'他的但尽管如此就是他的物神'。",
+      "evidence_ids": [
+        "C2E7"
+      ],
+      "kind": "quote"
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "C2E1",
+      "chunk_id": "0002-0000-79e78bf54641",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 1,
+      "end_line": 37,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C2E6",
+      "chunk_id": "0002-0005-359bff672fd8",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 125,
+      "end_line": 169,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C2E7",
+      "chunk_id": "0002-0006-4a1cb465d5e4",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 148,
+      "end_line": 169,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C2E10",
+      "chunk_id": "0002-0009-4192eea117c0",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 210,
+      "end_line": 236,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C2E12",
+      "chunk_id": "0002-0011-b7e0e4e65026",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 242,
+      "end_line": 295,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C2E15",
+      "chunk_id": "0002-0014-49ae2a99cb38",
+      "source_path": "raw/chapters/02-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 2,
+      "start_line": 303,
+      "end_line": 356,
+      "quote": "",
+      "page": null,
+      "spine": null
+    }
+  ],
+  "source_fingerprint": "3a9ebe05ee3c2ab2d9ddc090b270e99a09059c76c3ca5070ef159c3bc6df9d3b",
+  "generator_fingerprint": "4d453b0e23b69786cf577d5211b95bd419d7dcc9b3f43b2124a91dea502b6ae7"
+}

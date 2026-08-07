@@ -1,0 +1,24 @@
+[
+  {
+    "chunk_id": "0001-0000-d4a89f824d8c",
+    "source_path": "raw/chapters/01-attention.md",
+    "chapter": 1,
+    "section": "",
+    "text": "# Chapter 1: Attention\n\n> Book: The Craft of Deliberate Reading\n> Edition: First\n> Chapter: 1\n> Pages: 1-12\n> Source: Example source manuscript\n> Format: Markdown\n> Collected: 2026-08-07\n> Published: 2026-01-01\n\n## Attention as a practice\n\nAttention is a practice rather than a resource that can simply be spent. The reader must decide what deserves sustained notice before starting an argument.\n\nThe author writes, \"attention becomes durable when it is attached to a question\". A reading session that begins with a question can separate evidence from decoration.\n\n## A small method\n\nThe method has 3 steps: name the question, mark the evidence, and record what remains unresolved.",
+    "start_line": 1,
+    "end_line": 20,
+    "token_count": 161,
+    "content_hash": "d4a89f824d8c8fbe579008a8e3e7bf3e711bbc9d3e983962c6248200a1e98825"
+  },
+  {
+    "chunk_id": "0002-0000-b9b62e609009",
+    "source_path": "raw/chapters/02-memory.md",
+    "chapter": 2,
+    "section": "",
+    "text": "# Chapter 2: Memory\n\n> Book: The Craft of Deliberate Reading\n> Edition: First\n> Chapter: 2\n> Pages: 13-28\n> Source: Example source manuscript\n> Format: Markdown\n> Collected: 2026-08-07\n> Published: 2026-01-01\n\n## Memory needs structure\n\nMemory improves when notes preserve the relationship between a claim and its evidence. A summary without a source location becomes difficult to revisit.\n\nThe author writes, \"a useful note keeps the path back to the passage\". This chapter extends the first chapter's attention practice into a durable record.\n\n## A compact record\n\nA compact record names the chapter, the line range, and the unresolved question. It should not duplicate the entire source passage.",
+    "start_line": 1,
+    "end_line": 20,
+    "token_count": 162,
+    "content_hash": "b9b62e609009c0898f79bd520ccbfb3eeae6971aa6438eb6323a3b5d67e47eee"
+  }
+]

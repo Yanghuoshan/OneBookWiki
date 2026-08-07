@@ -1,0 +1,15 @@
+{
+  "run_id": "149407e2a6b0",
+  "status": "failed",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "failed",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "10df650a4a3f1b25847e62b294c1b00706d711dafdc81face4e7a966be01ad51",
+      "model_hash": "f78e733472e457a0e5e4037bc40b9a2ca034b40ad74723d36c9829448b9ad74e",
+      "error": "LLM provider returned an empty answer"
+    }
+  }
+}

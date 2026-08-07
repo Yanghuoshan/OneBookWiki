@@ -1,0 +1,183 @@
+{
+  "chapter": 1,
+  "title": "Fou Ren - Aleksandr Zvezdov",
+  "purpose": "以弗洛伊德所述'父亲梦见燃烧的孩子'之噩梦为切入点，引入并初步阐述'否认'（disavowal/Verleugnung）概念，阐明其在当代社会政治语境中的运作方式，并以此建立全书论证框架。",
+  "executive_summary": "本章通过弗洛伊德在《梦的解析》中讨论的一个著名噩梦——一位父亲梦见死去的孩子对他说'父亲，你没看见我在燃烧吗？'——引出'否认'概念的核心逻辑。作者指出，当前诸多危机具有与此梦相似的结构：我们面对双重之火（眼前的危机与更深层的结构性危机），却倾向于通过'醒来'以便能够继续做梦，即处理表面问题而回避更深层的真实。本章区分了'压抑'（repression）与'否认'：压抑将事物推出日常现实之外，而否认则保留事物于现实之中却改变其性质，使其失去破坏性、改变游戏规则的维度。作者认为这种否认机制正是当代'后事实'世界的特征——事实仍在，但已不再承载真实的重量。",
+  "core_thesis": "当代社会中的否认是一种倒错的理性形式，是知识自身的倒错形式，而非某种古老晦暗驱力的回归；它表现为'我当然知道，却仍然……'的逻辑，将非常态的、改变游戏规则的事实转化为日常事实，从而维持现状。",
+  "argument_map": "（1）以弗洛伊德'燃烧的孩子'之梦建立噩梦结构模型——父亲被梦中孩子的话语唤醒，象征某种比外在现实更真实的真实最终突破了梦的屏障。（2）将此结构映射到当代系列性危机：我们面对双重之火（眼前危机与深层结构性危机），却倾向于醒来以便继续做梦。（3）区分压抑与否认：压抑是二维的（将事物推出现实），否认是一维的（保留事物于现实但改变其性质）。（4）提出'后事实'世界概念：事实仍在但失去真实的重量，灾难论本身亦可成为否认的当代运作形式。",
+  "key_concepts": [
+    "否认（disavowal/Verleugnung）",
+    "压抑与否认的区分",
+    "后事实世界（post-factual world）",
+    "双重之火（火中之火）",
+    "醒来以便继续做梦",
+    "真实（the Real）",
+    "系列性（seriality）作为危机形式",
+    "灾难论作为否认的组成部分"
+  ],
+  "evidence_examples": [
+    {
+      "text": "弗洛伊德描述一位父亲在死去的孩子身旁守候多日，孩子死后他在隔壁房间入睡，梦见孩子站在床边说'父亲，你没看见我在燃烧吗？'父亲惊醒后发现蜡烛倒落烧着了孩子的裹布。拉康指出，唤醒父亲不仅是火的现实，更是儿子死亡的燃烧着的真实。",
+      "evidence_ids": [
+        "C1E6",
+        "C1E7"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "作者将噩梦结构映射到当代危机：当前诸多危机具有与上述梦境相同的结构——面对双重之火（眼前危机与深层结构性危机），我们倾向于醒来以便继续做梦，忘记那关乎真实的火。",
+      "evidence_ids": [
+        "C1E9",
+        "C1E10"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "以气候变化为例：人们确实比十年前更认真，有许多口头上的承认和新话（'绿色转型''可持续性'），但面对数据和毁灭性事件，我们似乎在骚动之中和帮助下继续做梦。",
+      "evidence_ids": [
+        "C1E10"
+      ],
+      "kind": "observation"
+    },
+    {
+      "text": "压抑是二维的，将事物从现实中推出；否认是一维的，被否认的东西并未从现实中消失，仍在同一层面上，成为现实的一部分，只是改变了性质和意义——被否认的是其破坏性的、改变游戏规则的维度。",
+      "evidence_ids": [
+        "C1E12"
+      ],
+      "kind": "observation"
+    }
+  ],
+  "important_quotations": [
+    {
+      "text": "父亲，你没看见我在燃烧吗？",
+      "evidence_ids": [
+        "C1E6"
+      ],
+      "kind": "quote"
+    },
+    {
+      "text": "这句话本身就是一个火种——它落到哪里，就把火带到哪里——人们看不到是什么在燃烧，因为火焰让我们目眩，实际上，被烧到的并不是显现出来的东西，而是在其下方铺垫着的东西（Unterlegt），以及在其下方承受并支撑着它的东西（Untertragen），也就是真实。",
+      "evidence_ids": [
+        "C1E7"
+      ],
+      "kind": "quote"
+    },
+    {
+      "text": "我们习惯于现实。而真理[它也随着每一次危机出现并来自危机]则被我们压抑。",
+      "evidence_ids": [
+        "C1E11"
+      ],
+      "kind": "quote"
+    },
+    {
+      "text": "也许这就是我们喜欢称之为后事实（post-factual）世界的东西：不是说没有事实——恰恰相反，周围只有事实——但它们'只是事实'，不再承载任何真实的重量。",
+      "evidence_ids": [
+        "C1E12"
+      ],
+      "kind": "quote"
+    }
+  ],
+  "relation_to_previous": "此为第一章，无前章可参照。",
+  "relation_tofollowing": "本章作为开篇以噩梦意象引入'否认'概念，为第二章深入展开概念精要（曼诺尼的'我当然知道，却仍然……'公式、否认与科学的关系等）奠定叙事与论证基础。",
+  "cross_chapter_connections": [
+    {
+      "text": "本章引入的'否认'概念将在第二章中获得更为系统的概念化展开，特别是围绕曼诺尼的奠基性文本'I Know Well, but All the Same…'进行阐释。",
+      "evidence_ids": [
+        "C1E2",
+        "C1E4"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "evidence_id": "C1E2",
+      "chunk_id": "0001-0001-d4f4b1782ebe",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 58,
+      "end_line": 109,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E4",
+      "chunk_id": "0001-0003-465ea94f9fba",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 87,
+      "end_line": 138,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E6",
+      "chunk_id": "0001-0005-6ea453cd3e17",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 142,
+      "end_line": 187,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E7",
+      "chunk_id": "0001-0006-77762482f67f",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 166,
+      "end_line": 222,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E9",
+      "chunk_id": "0001-0008-4b61ded67bfc",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 199,
+      "end_line": 250,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E10",
+      "chunk_id": "0001-0009-94883c4e9247",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 226,
+      "end_line": 278,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E11",
+      "chunk_id": "0001-0010-8dbe03627fda",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 256,
+      "end_line": 310,
+      "quote": "",
+      "page": null,
+      "spine": null
+    },
+    {
+      "evidence_id": "C1E12",
+      "chunk_id": "0001-0011-3d3cd5ebf7fe",
+      "source_path": "raw/chapters/01-fou-ren-aleksandr-zvezdov.md",
+      "chapter": 1,
+      "start_line": 285,
+      "end_line": 310,
+      "quote": "",
+      "page": null,
+      "spine": null
+    }
+  ],
+  "source_fingerprint": "def69bba7fc85ea96d560745eef5298cf962fb8076ad6b5f75238f60039294a6",
+  "generator_fingerprint": "4d453b0e23b69786cf577d5211b95bd419d7dcc9b3f43b2124a91dea502b6ae7"
+}

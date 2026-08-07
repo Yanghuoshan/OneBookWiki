@@ -1,0 +1,172 @@
+{
+  "run_id": "0b4b3928d510",
+  "status": "completed",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "f7301e6922d85f80dd5f792deca9d71ae50e9b68b65da19002344fa6da4a6dd2",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "58e6f5a8fc1be4c2838d86e63988b8b6cbe971c33175310531f66893f05d00a7",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0001.json",
+      "artifact_hash": "cce1a71f0b003bf6c2ccf64ed94fefdc9f67b5c6f89af98baaf509e43d8ad0ac"
+    },
+    "chapter:2": {
+      "node_id": "chapter:2",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "0594de3336450141516b11265db611cef2ac7b26b88a229d04956844d2f7b557",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "0a4b30bba28eb030d08e26f97f8e093753897740de8f18a6a95233f98d9fc1cc",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0002.json",
+      "artifact_hash": "e0b261b5ac7e218027dc86e097dd29bc64468aff29ea0e2cf7708498dd71a85a"
+    },
+    "chapter:3": {
+      "node_id": "chapter:3",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "507efa5665ae7083ff27a4c84bab45b2a85964b0b7938593e6c989b6375f55b8",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "e5ed9289cbeba1fab26f1aa56a9cb87210b70f6d75e815d2662cdb7a28e8e69b",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0003.json",
+      "artifact_hash": "82e7042519c75798caf650821802e1942ed6793f86b6909b4b3fff24648cc879"
+    },
+    "chapter:4": {
+      "node_id": "chapter:4",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "8b82d8f784c11762e9faa17ddfb15105d903ee9585f61757b4c1c69e76e59729",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "79a3dd88a5be7ae0da502ec100e67b8c30fee6d88efc76acd946cf8330aa5f56",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0004.json",
+      "artifact_hash": "0154218a0157e75b140064ab2c739742568a9304316ccec799f99e4dac9d91a9"
+    },
+    "chapter:5": {
+      "node_id": "chapter:5",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "38ac552c51e4d66c74f92b82c5ce52d4b54831841b22ed8755bd8a023ed42d9b",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "ba906a5e626311fc43550d4bd51cdf211d293b11bc5d820219d5274a5463537c",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0005.json",
+      "artifact_hash": "85499300de235981e40f71e042ca121772ec391e7261a331d2c5c730c0daa679"
+    },
+    "chapter:6": {
+      "node_id": "chapter:6",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "20d660ed82f7aef57aaabbc1e318b2b06c754a3f5655ef0a6ebf5ba2eda7308d",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "be041e1c1a84b336e51ee4da16fa2bc96fbc0d66568e7d73cd9d6ac7f1e2226a",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0006.json",
+      "artifact_hash": "2381b6a2414f0b1a2e90d06bba53071ea0af0ab89c0e2ff53a5d72490c84b59c"
+    },
+    "chapter:7": {
+      "node_id": "chapter:7",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "85bd4e3bb257e0f0756ba9965f9546537e2c6d5f908896a1a24166d0d0a3cba1",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "3b8d289ecaa1cd899749302ccac7b5d8c985ab4daa003a58d6de333fedcf0fa3",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0007.json",
+      "artifact_hash": "561346568af7841c05598444304d31b4cad5d438f05c6961e2d211014a5f3003"
+    },
+    "chapter:8": {
+      "node_id": "chapter:8",
+      "status": "completed",
+      "attempts": 5,
+      "stage": "chapter",
+      "prompt_hash": "6a759f0566902b2ae5b7c4df96c8e3598de7e78b66c644c1285412be4fc4a77e",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "error": "LLM generation request failed: APITimeoutError: Request timed out.",
+      "input_hash": "a3ec6817709ea91942915d2af664b15fdb7e70afae8f2d0b60d693c22a40944c",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0008.json",
+      "artifact_hash": "a9bf85d37bdd58d7a45de1caa597357e074d6a4df65c273d7a718ee0514b34d5"
+    },
+    "chapter:9": {
+      "node_id": "chapter:9",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "8793811e675c0bcebb52c7ace42ba1c8c872f8e862990176e2c07e56f5237a52",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "7ec8b564c7711449275736d62ab3255a81af33875c45769ce867bbdf25a36a63",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0009.json",
+      "artifact_hash": "f5407000123ab4c7fd2647e11b98c0315ba0eacad36bb7602c00b44f5576640e"
+    },
+    "rollup:1-4": {
+      "node_id": "rollup:1-4",
+      "status": "completed",
+      "attempts": 2,
+      "stage": "rollup",
+      "prompt_hash": "c17c5513f2b5aa2166a4d570b3b2086112536b6034e27035199fa19216d85b97",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "error": "unknown evidence ids: ['C4E1']",
+      "input_hash": "ac5768128fe0d783a37198b5dfd44c2724c4ae75edb6c32f902b541f3185d9a7",
+      "artifact_path": ".onebookwiki\\artifacts\\rollups\\0001-0004.json",
+      "artifact_hash": "38c8de36836d568353c37ceea4e74ce5273348ebcd1d0f590b2ca5f1b39977f9",
+      "dependencies": [
+        "chapter:1",
+        "chapter:2",
+        "chapter:3",
+        "chapter:4"
+      ]
+    },
+    "rollup:5-8": {
+      "node_id": "rollup:5-8",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "rollup",
+      "prompt_hash": "d02179659f1c278d9d5364c34093f31e6f264e2a767e328ac5db79bcb153ba99",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "ba7e21a0fa097a625452df8d3133741915b51d8ea3998f3e42b2a215079a30ce",
+      "artifact_path": ".onebookwiki\\artifacts\\rollups\\0005-0008.json",
+      "artifact_hash": "f70b05e6d956e21654a900332dba0b2caba2b6498bd35dea52d310d5b9752e69",
+      "dependencies": [
+        "chapter:5",
+        "chapter:6",
+        "chapter:7",
+        "chapter:8"
+      ]
+    },
+    "rollup:9-9": {
+      "node_id": "rollup:9-9",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "rollup",
+      "prompt_hash": "0c969107faa93bcec7dfac408e95f0c5b05d36b987cbbc5d1ab255c66482a709",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "input_hash": "9ab104f20749603fb37ffe73481fbe355664f1be560eaa26605950ca91b5428e",
+      "artifact_path": ".onebookwiki\\artifacts\\rollups\\0009-0009.json",
+      "artifact_hash": "db43fc524d3bbf4a9fd9619af49fb728ff9694f1cd01b810184c9219ad29d73f",
+      "dependencies": [
+        "chapter:9"
+      ]
+    },
+    "book:synthesis": {
+      "node_id": "book:synthesis",
+      "status": "completed",
+      "attempts": 8,
+      "stage": "book",
+      "prompt_hash": "c46b95e29df63756b534cf86bce5062cbdf1bf55a286a9223940e8b3b26b27cd",
+      "model_hash": "37d45268f64f5252b718abb6d42a06ba3b7c621a3006ddafa8e9d29295c82af3",
+      "error": "LLM generation request failed: APITimeoutError: Request timed out.",
+      "input_hash": "c6c144c7d76110d83b7b16fc13c81544b333858c823beec0277496755a27550d",
+      "artifact_path": ".onebookwiki\\artifacts\\book.json",
+      "artifact_hash": "8b9a7ba73b975a548decfe9f7be7e081b9fac29fd8e52b7e069af85facea59f0",
+      "dependencies": [
+        "rollup:1-4",
+        "rollup:5-8",
+        "rollup:9-9"
+      ]
+    }
+  }
+}

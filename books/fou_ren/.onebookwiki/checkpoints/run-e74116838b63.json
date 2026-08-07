@@ -1,0 +1,15 @@
+{
+  "run_id": "e74116838b63",
+  "status": "failed",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "failed",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "10df650a4a3f1b25847e62b294c1b00706d711dafdc81face4e7a966be01ad51",
+      "model_hash": "532a2dcf36ade6e61e003878641b334b13b8406affea517ff38fd9a84cc03c3c",
+      "error": "LLM response contains invalid JSON: Expecting ',' delimiter; repair unsuccessful: LLM response contains invalid JSON after repair: Expecting ',' delimiter; response length=2210, preview='```json { \"chapter\": 1, \"title\": \"Fou Ren - Aleksandr Zvezdov\", \"purpose\": \"本书第一章以弗洛伊德与拉康精神分析中的\"否认\"（disavowal, Verleugnung）概念为出发点，旨在阐明否认作为一种社会与政治现象在当代的主导地位，并将其与单纯的\"否定\"（denial）区分开来。作者通过弗洛伊德叙述的\"燃烧的孩子\"之梦，建立理解当代系列危机的结构性类比，并初步勾勒压抑与否认在拓扑学上的关键差异。\"'"
+    }
+  }
+}

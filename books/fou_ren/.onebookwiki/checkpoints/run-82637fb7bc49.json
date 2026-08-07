@@ -1,0 +1,15 @@
+{
+  "run_id": "82637fb7bc49",
+  "status": "failed",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "failed",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "10df650a4a3f1b25847e62b294c1b00706d711dafdc81face4e7a966be01ad51",
+      "model_hash": "532a2dcf36ade6e61e003878641b334b13b8406affea517ff38fd9a84cc03c3c",
+      "error": "LLM generation request failed: BadRequestError: Error code: 400 - {'error': {'message': 'The supported API model names are deepseek-v4-pro or deepseek-v4-flash, but you passed LongCat-2.0.', 'type': 'invalid_request_error', 'param': None, 'code': 'invalid_request_error'}}"
+    }
+  }
+}

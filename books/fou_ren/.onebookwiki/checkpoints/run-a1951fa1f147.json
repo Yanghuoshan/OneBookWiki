@@ -1,0 +1,14 @@
+{
+  "run_id": "a1951fa1f147",
+  "status": "running",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "running",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "10df650a4a3f1b25847e62b294c1b00706d711dafdc81face4e7a966be01ad51",
+      "model_hash": "6acb3873d448b9e1ce6d5c7e609338abd3931097daf70819650b7a7834543eeb"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onebookwiki"
+version = "0.1.0"
+description = "Evidence-grounded, retrieval-first analysis of a single book"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+rag = ["tiktoken>=0.7", "numpy>=1.26", "faiss-cpu>=1.8"]
+local-embeddings = ["sentence-transformers>=3.0"]
+cloud = ["openai>=1.0", "pymupdf>=1.24", "json-repair>=0.30"]
+all = ["tiktoken>=0.7", "numpy>=1.26", "faiss-cpu>=1.8", "sentence-transformers>=3.0", "openai>=1.0", "pymupdf>=1.24", "json-repair>=0.30"]
+
+[tool.setuptools.packages.find]
+include = ["onebookwiki*"]

@@ -1,0 +1,41 @@
+{
+  "run_id": "f7766f31bb1a",
+  "status": "failed",
+  "nodes": {
+    "chapter:1": {
+      "node_id": "chapter:1",
+      "status": "completed",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "10df650a4a3f1b25847e62b294c1b00706d711dafdc81face4e7a966be01ad51",
+      "model_hash": "4d453b0e23b69786cf577d5211b95bd419d7dcc9b3f43b2124a91dea502b6ae7",
+      "repaired_json": true,
+      "strict_parse_error": "LLM response contains invalid JSON: Expecting ',' delimiter",
+      "input_hash": "def69bba7fc85ea96d560745eef5298cf962fb8076ad6b5f75238f60039294a6",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0001.json",
+      "artifact_hash": "b7dcd4775f42758bc07e7183e94a5c0e417885e8ab30a960deb7fe649ddb30a0"
+    },
+    "chapter:2": {
+      "node_id": "chapter:2",
+      "status": "completed",
+      "attempts": 1,
+      "stage": "chapter",
+      "prompt_hash": "3faf02f40c10451a7ed4aa4a7dafbe8e76ee30dfa88f8073665cf80d71b22bab",
+      "model_hash": "4d453b0e23b69786cf577d5211b95bd419d7dcc9b3f43b2124a91dea502b6ae7",
+      "repaired_json": true,
+      "strict_parse_error": "LLM response contains invalid JSON: Expecting ',' delimiter",
+      "input_hash": "3a9ebe05ee3c2ab2d9ddc090b270e99a09059c76c3ca5070ef159c3bc6df9d3b",
+      "artifact_path": ".onebookwiki\\artifacts\\chapters\\0002.json",
+      "artifact_hash": "03c1c29fe16124dadb3b9c2952d8615ea309b7fb6293c4b8c1014f438140779f"
+    },
+    "chapter:3": {
+      "node_id": "chapter:3",
+      "status": "failed",
+      "attempts": 2,
+      "stage": "chapter",
+      "prompt_hash": "8e0323b2dc30873fcd98072f29b941bb80319ee2fbce207d13decf3df86d741f",
+      "model_hash": "532a2dcf36ade6e61e003878641b334b13b8406affea517ff38fd9a84cc03c3c",
+      "error": "LLM provider returned an empty answer"
+    }
+  }
+}
