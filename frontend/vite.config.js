@@ -9,22 +9,79 @@ var __assign = (this && this.__assign) || function () {
     };
     return __assign.apply(this, arguments);
 };
+var __spreadArray = (this && this.__spreadArray) || function (to, from, pack) {
+    if (pack || arguments.length === 2) for (var i = 0, l = from.length, ar; i < l; i++) {
+        if (ar || !(i in from)) {
+            if (!ar) ar = Array.prototype.slice.call(from, 0, i);
+            ar[i] = from[i];
+        }
+    }
+    return to.concat(ar || Array.prototype.slice.call(from));
+};
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { dirname, extname, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-var bookRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books', 'zhenshi');
+var booksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books');
+var defaultBookId = 'zhenshi';
+var bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 var contentTypes = {
     '.json': 'application/json; charset=utf-8',
     '.md': 'text/markdown; charset=utf-8',
 };
+function isWithin(root, candidate) {
+    var path = relative(root, candidate);
+    return path !== '' && !path.startsWith('..') && !isAbsolute(path);
+}
+function isDirectory(path) {
+    try {
+        return existsSync(path) && statSync(path).isDirectory();
+    }
+    catch (_a) {
+        return false;
+    }
+}
+function isFile(path) {
+    try {
+        return existsSync(path) && statSync(path).isFile();
+    }
+    catch (_a) {
+        return false;
+    }
+}
+function parseBookRequest(requestUrl) {
+    var encodedPath = requestUrl.split('?', 1)[0].replace(/^\/+/, '');
+    var requestPath;
+    try {
+        requestPath = decodeURIComponent(encodedPath);
+    }
+    catch (_a) {
+        return null;
+    }
+    if (!requestPath || /[\\\0]/.test(requestPath))
+        return null;
+    var segments = requestPath.split('/');
+    if (segments.some(function (segment) { return !segment || segment === '.' || segment === '..'; }))
+        return null;
+    var first = segments[0], remaining = segments.slice(1);
+    var candidateRoot = resolve(booksRoot, first);
+    var hasExplicitBook = bookIdPattern.test(first) && isWithin(booksRoot, candidateRoot) && isDirectory(candidateRoot);
+    return hasExplicitBook
+        ? { bookId: first, relativePath: remaining }
+        : { bookId: defaultBookId, relativePath: segments };
+}
 function bookStaticMiddleware() {
     return function (request, response, next) {
         var requestUrl = request.url || '/';
-        var requestPath = decodeURIComponent(requestUrl.split('?', 1)[0]).replace(/^\/+/, '');
-        var filePath = resolve(bookRoot, requestPath);
-        if (!filePath.startsWith("".concat(bookRoot).concat(sep)) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+        var parsed = parseBookRequest(requestUrl);
+        if (!parsed || !bookIdPattern.test(parsed.bookId)) {
+            next();
+            return;
+        }
+        var bookRoot = resolve(booksRoot, parsed.bookId);
+        var filePath = resolve.apply(void 0, __spreadArray([bookRoot], parsed.relativePath, false));
+        if (!isWithin(bookRoot, filePath) || !isFile(filePath)) {
             next();
             return;
         }

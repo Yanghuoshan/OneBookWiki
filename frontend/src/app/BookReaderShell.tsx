@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { loadBook, loadPage } from '../data/bookLoader';
+import { loadBook, loadPage, resolveBookBase } from '../data/bookLoader';
 import type { EvidenceIndex, EvidenceRecord, WikiPage, WikiStructure } from '../types/wiki';
 import PageTree from '../components/PageTree';
 import MarkdownReader from '../components/MarkdownReader';
@@ -15,14 +15,15 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   const [source, setSource] = useState<EvidenceRecord | null>(null);
   const [loading, setLoading] = useState(!initialStructure);
   const [error, setError] = useState<string | null>(null);
+  const bookBase = useMemo(() => resolveBookBase(), []);
 
   useEffect(() => {
     if (structure) return;
-    loadBook().then(({ structure: loadedStructure, evidence: loadedEvidence }) => {
+    loadBook(bookBase).then(({ structure: loadedStructure, evidence: loadedEvidence }) => {
       setStructure(loadedStructure);
       setEvidence(loadedEvidence);
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法加载书籍数据')).finally(() => setLoading(false));
-  }, [structure]);
+  }, [bookBase, structure]);
 
   const defaultPage = useMemo(() => {
     if (!structure) return null;
@@ -37,14 +38,14 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   useEffect(() => {
     if (!current) return;
     setContent('');
-    loadPage(current).then(setContent).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法加载页面内容'));
+    loadPage(current, bookBase).then(setContent).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '无法加载页面内容'));
     const url = new URL(window.location.href);
     url.searchParams.set('page', current.id);
     window.history.replaceState({}, '', url);
-  }, [current]);
+  }, [bookBase, current]);
 
   if (loading) return <div className="status-screen"><div className="loader-mark">◎</div><p>正在打开 OneBookWiki…</p></div>;
-  if (error && !structure) return <div className="status-screen error-screen"><h1>无法打开这本书</h1><p>{error}</p><p className="hint">请设置 VITE_ONEBOOKWIKI_BASE_URL，指向包含 wiki/structure.json 的 book root。</p></div>;
+  if (error && !structure) return <div className="status-screen error-screen"><h1>无法打开这本书</h1><p>{error}</p><p className="hint">当前书籍路径为 {bookBase}。请确认该路径下存在 wiki/structure.json。</p></div>;
   if (!structure) return null;
 
   return (

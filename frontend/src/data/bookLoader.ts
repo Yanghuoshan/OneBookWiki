@@ -1,10 +1,28 @@
 import type { EvidenceIndex, EvidenceRecord, Locator, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
 
-const configuredBase = (import.meta.env.VITE_ONEBOOKWIKI_BASE_URL as string | undefined) || '/book';
-const base = configuredBase.replace(/\/$/, '');
+const configuredBase = ((import.meta.env.VITE_ONEBOOKWIKI_BASE_URL as string | undefined) || '/book').replace(/\/$/, '');
+const bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
-async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${base}/${path.replace(/^\//, '')}`);
+function routeBookBase(pathname: string): string | undefined {
+  const prefix = '/book';
+  if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) return undefined;
+  const suffix = pathname.slice(prefix.length).replace(/^\/+/, '');
+  const firstSegment = suffix.split('/', 1)[0];
+  if (!firstSegment || firstSegment === 'wiki') return prefix;
+  if (bookIdPattern.test(firstSegment)) return `${prefix}/${encodeURIComponent(firstSegment)}`;
+  return prefix;
+}
+
+export function resolveBookBase(pathname = window.location.pathname): string {
+  return routeBookBase(pathname) || configuredBase;
+}
+
+function joinBase(base: string, path: string): string {
+  return `${base}/${path.replace(/^\//, '')}`;
+}
+
+async function getJson<T>(base: string, path: string): Promise<T> {
+  const response = await fetch(joinBase(base, path));
   if (!response.ok) throw new Error(`无法加载 ${path}（HTTP ${response.status}）`);
   return response.json() as Promise<T>;
 }
@@ -44,16 +62,16 @@ export function resolveEvidence(id: string, evidence: EvidenceIndex): EvidenceRe
   return evidence.evidence[id] || evidence.evidence[id.replace(/^onebookwiki:\/\/evidence\//, '')];
 }
 
-export async function loadBook(): Promise<{ structure: WikiStructure; evidence: EvidenceIndex }> {
+export async function loadBook(base = resolveBookBase()): Promise<{ structure: WikiStructure; evidence: EvidenceIndex }> {
   const [structure, evidence] = await Promise.all([
-    getJson<WikiStructure>('wiki/structure.json'),
-    getJson<EvidenceIndex>('wiki/evidence.json').catch(() => ({ evidence: {} })),
+    getJson<WikiStructure>(base, 'wiki/structure.json'),
+    getJson<EvidenceIndex>(base, 'wiki/evidence.json').catch(() => ({ evidence: {} })),
   ]);
   return { structure: normalizeStructure(structure), evidence };
 }
 
-export async function loadPage(page: WikiPage): Promise<string> {
-  const response = await fetch(`${base}/wiki/${page.path.replace(/^\//, '')}`);
+export async function loadPage(page: WikiPage, base = resolveBookBase()): Promise<string> {
+  const response = await fetch(joinBase(base, `wiki/${page.path}`));
   if (!response.ok) throw new Error(`无法加载页面 ${page.path}（HTTP ${response.status}）`);
   return response.text();
 }
