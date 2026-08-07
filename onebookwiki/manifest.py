@@ -6,7 +6,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from .markdown import sha256_text
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 @dataclass
 class Manifest:

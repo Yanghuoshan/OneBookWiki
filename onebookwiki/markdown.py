@@ -195,7 +195,12 @@ def _numbers(line: str) -> list[Candidate]:
 
 def contains(haystack: str, candidate: Candidate) -> bool:
     if candidate.kind == "quote":
-        return candidate.value in haystack
+        if candidate.value in haystack:
+            return True
+        # OCR often inserts spaces between CJK characters. Treat that as
+        # formatting noise while retaining exact character and punctuation order.
+        compact = lambda value: re.sub(r"\s+", "", value)
+        return compact(candidate.value) in compact(haystack)
     suffix_guard = r"(?!-\d{2})" if candidate.kind == "date" and len(candidate.value) == 7 else ""
     pattern = r"(?<![\d.,])" + re.escape(candidate.value) + suffix_guard + r"(?![A-Za-z0-9]|[.,]\d|%)"
     return re.search(pattern, haystack) is not None

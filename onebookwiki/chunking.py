@@ -1,7 +1,7 @@
 """Deterministic, language-aware, line-tracked chunking for long chapters."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
 
@@ -23,6 +23,57 @@ class Chunk:
     end_line: int
     token_count: int
     content_hash: str
+    locator: dict[str, object] = field(default_factory=dict)
+
+
+_METADATA_RE = re.compile(r"^>\s*([^:]+):\s*(.*?)\s*$", re.MULTILINE)
+_PAGE_HEADING_RE = re.compile(r"^##\s+Page\s+(\d+)\s*$", re.IGNORECASE)
+
+
+def _document_metadata(text: str) -> dict[str, str]:
+    return {key.strip().lower(): value.strip() for key, value in _METADATA_RE.findall(text)}
+
+
+def _page_numbers_for_lines(text: str, start_line: int, end_line: int) -> list[int]:
+    """Return PDF physical pages whose Markdown ranges overlap a chunk."""
+    lines = text.splitlines()
+    headings = [
+        (line_number, int(match.group(1)))
+        for line_number, line in enumerate(lines, 1)
+        if (match := _PAGE_HEADING_RE.match(line))
+    ]
+    pages: list[int] = []
+    for index, (heading_line, page) in enumerate(headings):
+        next_heading = headings[index + 1][0] if index + 1 < len(headings) else len(lines) + 1
+        if heading_line <= end_line and next_heading - 1 >= start_line:
+            pages.append(page)
+    return pages
+
+
+def locator_for_range(text: str, start_line: int, end_line: int, chapter: int) -> dict[str, object]:
+    """Build a display-ready provenance locator from imported chapter Markdown."""
+    values = _document_metadata(text)
+    source_format = values.get("format", "").upper()
+    if source_format == "PDF":
+        pages = _page_numbers_for_lines(text, start_line, end_line)
+        if pages:
+            return {"format": "PDF", "physical_page_start": min(pages), "physical_page_end": max(pages)}
+        page_range = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", values.get("pages", ""))
+        if page_range:
+            return {"format": "PDF", "physical_page_start": int(page_range.group(1)), "physical_page_end": int(page_range.group(2)), "precision": "chapter-range"}
+        return {"format": "PDF", "precision": "unknown"}
+    if source_format == "EPUB":
+        locator: dict[str, object] = {"format": "EPUB", "chapter": chapter}
+        if values.get("spine"):
+            locator["spine_id"] = values["spine"]
+        if values.get("spine index"):
+            locator["spine_index"] = int(values["spine index"])
+        if values.get("href"):
+            locator["href"] = values["href"]
+        if values.get("fragment"):
+            locator["fragment"] = values["fragment"]
+        return locator
+    return {"format": source_format or "UNKNOWN", "chapter": chapter}
 
 
 def count_tokens(text: str) -> int:
@@ -123,12 +174,23 @@ def _split_block(start: int, end: int, section: str, text: str, cjk: bool, max_t
     return result
 
 
-def _make_chunk(blocks, source_path: str, chapter: int, ordinal: int) -> Chunk:
+def _make_chunk(blocks, source_path: str, chapter: int, ordinal: int, source_text: str) -> Chunk:
     start, _, section, _ = blocks[0]
     _, end, _, _ = blocks[-1]
     body = "\n\n".join(item[3] for item in blocks)
     digest = sha256_text(body)
-    return Chunk(f"{chapter:04d}-{ordinal:04d}-{digest[:12]}", source_path, chapter, section, body, start, end, count_tokens(body), digest)
+    return Chunk(
+        f"{chapter:04d}-{ordinal:04d}-{digest[:12]}",
+        source_path,
+        chapter,
+        section,
+        body,
+        start,
+        end,
+        count_tokens(body),
+        digest,
+        locator_for_range(source_text, start, end, chapter),
+    )
 
 
 def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_tokens: int, max_tokens: int) -> list[Chunk]:
@@ -155,7 +217,18 @@ def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_t
                 if count_tokens(body) > max_tokens:
                     body = chunk.text
                 digest = sha256_text(body)
-                chunk = Chunk(f"{chapter:04d}-{index:04d}-{digest[:12]}", source_path, chapter, chunk.section, body, chunk.start_line, chunk.end_line, count_tokens(body), digest)
+                chunk = Chunk(
+                    f"{chapter:04d}-{index:04d}-{digest[:12]}",
+                    source_path,
+                    chapter,
+                    chunk.section,
+                    body,
+                    chunk.start_line,
+                    chunk.end_line,
+                    count_tokens(body),
+                    digest,
+                    chunk.locator,
+                )
         result.append(chunk)
     return result
 
@@ -194,7 +267,7 @@ def chunk_text(
     for block in units:
         block_tokens = count_tokens(block[3])
         if pending and pending_tokens + block_tokens > target:
-            grouped.append(_make_chunk(pending, source_path, chapter, len(grouped)))
+            grouped.append(_make_chunk(pending, source_path, chapter, len(grouped), text))
             # Apply overlap only after chunks have been formed. Carrying whole
             # blocks here can immediately exceed the target when a CJK
             # sentence is larger than the requested overlap budget.
@@ -202,7 +275,7 @@ def chunk_text(
         pending.append(block)
         pending_tokens += block_tokens
     if pending:
-        grouped.append(_make_chunk(pending, source_path, chapter, len(grouped)))
+        grouped.append(_make_chunk(pending, source_path, chapter, len(grouped), text))
     return _with_overlap(grouped, source_path, chapter, overlap, maximum)
 
 

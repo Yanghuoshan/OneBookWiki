@@ -3,10 +3,131 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from .models import BookSynthesis, ChapterInterpretation, Claim, book_from_dict, chapter_from_dict
+from .chunking import locator_for_range
+from .citations import display_label
+from .models import BookSynthesis, ChapterInterpretation, Claim, EvidenceRef, book_from_dict, chapter_from_dict, to_dict
+
+
+CITATION_ID_RE = re.compile(r"\[?(C\d+E\d+)(?!\d)\]?")
+
+
+def _citation(ref: EvidenceRef) -> str:
+    return f"[{display_label(ref)}](onebookwiki://evidence/{ref.evidence_id})"
+
+
+def _citation_list(ids: tuple[str, ...], evidence_by_id: dict[str, EvidenceRef]) -> str:
+    citations = [_citation(evidence_by_id[item]) for item in ids if item in evidence_by_id]
+    return f" ({'; '.join(citations)})" if citations else ""
+
+
+def _replace_inline_citations(text: str, evidence_by_id: dict[str, EvidenceRef]) -> str:
+    return CITATION_ID_RE.sub(
+        lambda match: _citation(evidence_by_id[match.group(1)]) if match.group(1) in evidence_by_id else "[来源未解析]",
+        text,
+    )
+
+
+def _replace_inline_citation_labels(text: str, evidence_by_id: dict[str, EvidenceRef]) -> str:
+    return CITATION_ID_RE.sub(
+        lambda match: f" [{display_label(evidence_by_id[match.group(1)])}]" if match.group(1) in evidence_by_id else " [来源未解析]",
+        text,
+    )
+
+
+def _inline_evidence_ids(text: str) -> set[str]:
+    return {match.group(1) for match in CITATION_ID_RE.finditer(text)}
+
+
+def _hydrate_legacy_locators(chapters: list[ChapterInterpretation], root: Path) -> list[ChapterInterpretation]:
+    """Derive display locators for old artifacts without rewriting them."""
+    source_texts: dict[str, str] = {}
+    hydrated: list[ChapterInterpretation] = []
+    for chapter in chapters:
+        evidence: list[EvidenceRef] = []
+        for ref in chapter.evidence:
+            if ref.locator:
+                evidence.append(ref)
+                continue
+            raw_path = root / ref.source_path
+            if raw_path.is_file():
+                source_text = source_texts.setdefault(ref.source_path, raw_path.read_text(encoding="utf-8"))
+                locator = locator_for_range(source_text, ref.start_line, ref.end_line, ref.chapter)
+            else:
+                locator = {}
+            evidence.append(replace(ref, locator=locator) if locator else ref)
+        hydrated.append(replace(chapter, evidence=evidence))
+    return hydrated
+
+
+def _manifest_evidence(root: Path) -> dict[str, EvidenceRef]:
+    """Recreate refs omitted by legacy artifacts from manifest chunk order."""
+    manifest_path = root / ".onebookwiki" / "manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    chunks = manifest.get("chunks", {})
+    raw_texts: dict[str, str] = {}
+    result: dict[str, EvidenceRef] = {}
+    for chapter_data in (manifest.get("chapters", {}) or {}).values():
+        chapter = int(chapter_data.get("chapter", 0))
+        for index, chunk_id in enumerate(chapter_data.get("chunk_ids", []), 1):
+            chunk = chunks.get(chunk_id, {})
+            if not isinstance(chunk, dict):
+                continue
+            source_path = str(chunk.get("source_path", ""))
+            start_line = int(chunk.get("start_line", 0))
+            end_line = int(chunk.get("end_line", 0))
+            locator = dict(chunk.get("locator") or {})
+            raw_path = root / source_path
+            if not locator and raw_path.is_file():
+                source_text = raw_texts.setdefault(source_path, raw_path.read_text(encoding="utf-8"))
+                locator = locator_for_range(source_text, start_line, end_line, chapter)
+            result[f"C{chapter}E{index}"] = EvidenceRef(
+                evidence_id=f"C{chapter}E{index}",
+                chunk_id=str(chunk.get("chunk_id", chunk_id)),
+                source_path=source_path,
+                chapter=int(chunk.get("chapter", chapter)),
+                start_line=start_line,
+                end_line=end_line,
+                locator=locator,
+            )
+    return result
+
+
+def _evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> dict[str, EvidenceRef]:
+    result = _manifest_evidence(root)
+    result.update({ref.evidence_id: ref for chapter in chapters for ref in chapter.evidence})
+    return result
+
+
+def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> Path:
+    source_hash = ""
+    source_path = root / ".onebookwiki" / "source.json"
+    if source_path.is_file():
+        try:
+            source_hash = str(json.loads(source_path.read_text(encoding="utf-8")).get("source_hash", ""))
+        except (OSError, ValueError):
+            pass
+    records = {}
+    for evidence_id, ref in _evidence_index(root, chapters).items():
+        excerpt = ""
+        raw_path = root / ref.source_path
+        if raw_path.is_file() and ref.start_line > 0 and ref.end_line >= ref.start_line:
+            excerpt = "\n".join(raw_path.read_text(encoding="utf-8").splitlines()[ref.start_line - 1 : ref.end_line]).strip()[:800]
+        records[evidence_id] = {**to_dict(ref), "display_label": display_label(ref), "excerpt": excerpt, "source_hash": source_hash}
+    payload = {"schema_version": 1, "evidence": records}
+    targets = [root / ".onebookwiki" / "artifacts" / "evidence.json", root / "wiki" / "evidence.json"]
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return targets[-1]
 
 
 def slugify(value: str) -> str:
@@ -14,16 +135,23 @@ def slugify(value: str) -> str:
     return normalized or "item"
 
 
-def _claims(values: list[Claim], kind: str | None = None, slugs: dict[int, str] | None = None) -> str:
+def _claims(
+    values: list[Claim],
+    kind: str | None = None,
+    slugs: dict[int, str] | None = None,
+    evidence_by_id: dict[str, EvidenceRef] | None = None,
+) -> str:
     if not values:
         return "（暂无经过验证的内容。）"
+    evidence_by_id = evidence_by_id or {}
     lines = []
     for index, item in enumerate(values):
-        text = item.text or "（未命名条目）"
+        text = _replace_inline_citations(item.text or "（未命名条目）", evidence_by_id)
         if kind and slugs is not None:
-            text = f"[{text}]({kind}/{slugs[index]}.md)"
-        evidence = f" (`{', '.join(item.evidence_ids)}`)" if item.evidence_ids else ""
-        lines.append(f"- {text}{evidence}")
+            text = f"[{_replace_inline_citation_labels(item.text or '（未命名条目）', evidence_by_id)}]({kind}/{slugs[index]}.md)"
+        inline_ids = _inline_evidence_ids(item.text)
+        remaining_ids = tuple(item_id for item_id in item.evidence_ids if item_id not in inline_ids)
+        lines.append(f"- {text}{_citation_list(remaining_ids, evidence_by_id)}")
     return "\n".join(lines)
 
 
@@ -62,12 +190,17 @@ def _raw_metadata(prefix: str, raw_path: str | None) -> str:
     return f"> Raw: [{label}]({prefix}{raw_path})\n"
 
 
-def render_chapter(chapter: ChapterInterpretation, root: Path) -> Path:
+def render_chapter(
+    chapter: ChapterInterpretation,
+    root: Path,
+    evidence_by_id: dict[str, EvidenceRef] | None = None,
+) -> Path:
     target = root / "wiki" / "chapters" / f"{chapter.chapter:02d}-{slugify(chapter.title)}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     raw_path = _raw_source(chapter, root)
+    evidence_by_id = evidence_by_id or {ref.evidence_id: ref for ref in chapter.evidence}
     evidence = "\n".join(
-        f"- `{ref.evidence_id}`: [{ref.source_path}:{ref.start_line}-{ref.end_line}]"
+        f"- {_citation(ref)} · [{ref.source_path}:{ref.start_line}-{ref.end_line}]"
         f"(../../{ref.source_path}#L{ref.start_line}-L{ref.end_line})"
         for ref in chapter.evidence
     ) or "- （暂无可验证证据。）"
@@ -81,51 +214,51 @@ def render_chapter(chapter: ChapterInterpretation, root: Path) -> Path:
 
 ## Chapter Purpose
 
-{chapter.purpose or '证据不足以判断。'}
+{_replace_inline_citations(chapter.purpose or '证据不足以判断。', evidence_by_id)}
 
 ## Executive Summary
 
-{chapter.executive_summary or '证据不足以判断。'}
+{_replace_inline_citations(chapter.executive_summary or '证据不足以判断。', evidence_by_id)}
 
 ## Core Thesis
 
-{chapter.core_thesis or '证据不足以判断。'}
+{_replace_inline_citations(chapter.core_thesis or '证据不足以判断。', evidence_by_id)}
 
 ## Argument Map
 
-{chapter.argument_map or '证据不足以判断。'}
+{_replace_inline_citations(chapter.argument_map or '证据不足以判断。', evidence_by_id)}
 
 ## Key Concepts
 
-{chr(10).join(f'- {item}' for item in chapter.key_concepts) or '- （暂无。）'}
+{chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in chapter.key_concepts) or '- （暂无。）'}
 
 ## Evidence and Examples
 
-{_claims(chapter.evidence_examples)}
+{_claims(chapter.evidence_examples, evidence_by_id=evidence_by_id)}
 
 ## Important Quotations
 
-{_claims(chapter.important_quotations)}
+{_claims(chapter.important_quotations, evidence_by_id=evidence_by_id)}
 
 ## Relation to Previous Chapters
 
-{chapter.relation_to_previous or '证据不足以判断。'}
+{_replace_inline_citations(chapter.relation_to_previous or '证据不足以判断。', evidence_by_id)}
 
 ## Relation to Following Chapters
 
-{chapter.relation_to_following or '证据不足以判断。'}
+{_replace_inline_citations(chapter.relation_to_following or '证据不足以判断。', evidence_by_id)}
 
 ## Cross-Chapter Connections
 
-{_claims(chapter.cross_chapter_connections)}
+{_claims(chapter.cross_chapter_connections, evidence_by_id=evidence_by_id)}
 
 ## Open Questions
 
-{chr(10).join(f'- {item}' for item in chapter.open_questions) or '- （暂无。）'}
+{chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in chapter.open_questions) or '- （暂无。）'}
 
 ## Review Questions
 
-{chr(10).join(f'- {item}' for item in chapter.review_questions) or '- （暂无。）'}
+{chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in chapter.review_questions) or '- （暂无。）'}
 
 ## Evidence Register
 
@@ -145,7 +278,7 @@ def _entity_page(
 ) -> Path:
     target = root / "wiki" / kind / f"{slug}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
-    evidence_by_id = {ref.evidence_id: ref for chapter in chapters for ref in chapter.evidence}
+    evidence_by_id = _evidence_index(root, chapters)
     chapter_numbers = sorted({evidence_by_id[item].chapter for item in claim.evidence_ids if item in evidence_by_id})
     chapter_links = []
     for number in chapter_numbers:
@@ -154,7 +287,7 @@ def _entity_page(
             chapter_links.append(f"- [Chapter {number}](../chapters/{number:02d}-{slugify(chapter.title)}.md)")
     section_title = {"themes": "Theme", "concepts": "Concept", "arguments": "Claim"}.get(kind, "Entry")
     target.write_text(
-        f"""# {claim.text or slug}
+        f"""# {_replace_inline_citation_labels(claim.text or slug, evidence_by_id)}
 
 > Book: [{book.title}](../book.md)
 > Updated: {date.today().isoformat()}
@@ -162,7 +295,7 @@ def _entity_page(
 
 ## {section_title}
 
-{claim.text or '证据不足以判断。'}
+{_replace_inline_citations(claim.text or '证据不足以判断。', evidence_by_id)}{_citation_list(tuple(item for item in claim.evidence_ids if item not in _inline_evidence_ids(claim.text)), evidence_by_id)}
 
 ## Qualification
 
@@ -172,34 +305,40 @@ def _entity_page(
 
 {chr(10).join(chapter_links) or '- （暂无可链接的章节证据。）'}
 
-## Evidence IDs
+## Sources
 
-{', '.join(f'`{item}`' for item in claim.evidence_ids) or '（暂无。）'}
+{'; '.join(_citation(evidence_by_id[item]) for item in claim.evidence_ids if item in evidence_by_id) or '（暂无。）'}
 """,
         encoding="utf-8",
     )
     return target
 
 
-def _linked_claims(values: list[Claim], kind: str) -> tuple[str, list[tuple[int, Claim, str]]]:
+def _linked_claims(
+    values: list[Claim],
+    kind: str,
+    evidence_by_id: dict[str, EvidenceRef],
+) -> tuple[str, list[tuple[int, Claim, str]]]:
     records = _entity_records(values)
     slugs = {index: slug for index, _, slug in records}
-    return _claims(values, kind, slugs), records
+    return _claims(values, kind, slugs, evidence_by_id), records
 
 
 def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root: Path) -> list[Path]:
+    chapters = _hydrate_legacy_locators(chapters, root)
     wiki = root / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     first_raw = next((_raw_source(chapter, root) for chapter in chapters if _raw_source(chapter, root)), None)
+    evidence_by_id = _evidence_index(root, chapters)
 
     for chapter in chapters:
-        generated.append(render_chapter(chapter, root))
+        generated.append(render_chapter(chapter, root, evidence_by_id))
 
     entity_records: dict[str, list[tuple[int, Claim, str]]] = {}
     linked_sections: dict[str, str] = {}
     for kind, values in (("themes", book.themes), ("concepts", book.concepts), ("arguments", book.arguments)):
-        linked, records = _linked_claims(values, kind)
+        linked, records = _linked_claims(values, kind, evidence_by_id)
         linked_sections[kind] = linked
         entity_records[kind] = records
         for _, claim, slug in records:
@@ -207,7 +346,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
 
     rows = "\n".join(
         f"| {item.chapter} | [Chapter {item.chapter}](chapters/{item.chapter:02d}-{slugify(item.title)}.md) | "
-        f"{item.executive_summary or '暂无摘要'} | generated | {date.today().isoformat()} |"
+        f"{_replace_inline_citations(item.executive_summary or '暂无摘要', evidence_by_id)} | generated | {date.today().isoformat()} |"
         for item in chapters
     )
     index = wiki / "index.md"
@@ -232,7 +371,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
 
 ## Book-Level Thesis
 
-{book.core_thesis or '证据不足以判断。'}
+{_replace_inline_citations(book.core_thesis or '证据不足以判断。', evidence_by_id)}
 
 ## Cross-Chapter Themes
 
@@ -267,15 +406,15 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
 
 ## Overview
 
-{book.overview or '证据不足以判断。'}
+{_replace_inline_citations(book.overview or '证据不足以判断。', evidence_by_id)}
 
 ## Core Thesis
 
-{book.core_thesis or '证据不足以判断。'}
+{_replace_inline_citations(book.core_thesis or '证据不足以判断。', evidence_by_id)}
 
 ## Argument Chain
 
-{book.argument_chain or '证据不足以判断。'}
+{_replace_inline_citations(book.argument_chain or '证据不足以判断。', evidence_by_id)}
 
 ## Themes
 
@@ -291,11 +430,11 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
 
 ## Terminology
 
-{chr(10).join(f'- {item}' for item in book.terminology) or '- （暂无。）'}
+{chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in book.terminology) or '- （暂无。）'}
 
 ## Unresolved Questions
 
-{chr(10).join(f'- {item}' for item in book.unresolved_questions) or '- （暂无。）'}
+{chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in book.unresolved_questions) or '- （暂无。）'}
 
 [Open the reading map](index.md).
 """,
@@ -306,14 +445,20 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
     review = wiki / "review"
     review.mkdir(parents=True, exist_ok=True)
     questions = [(chapter, question) for chapter in chapters for question in chapter.review_questions]
-    questions_text = "\n".join(f"- {question} ([Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md))" for chapter, question in questions)
+    questions_text = "\n".join(
+        f"- {_replace_inline_citations(question, evidence_by_id)} "
+        f"([Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md))"
+        for chapter, question in questions
+    )
     (review / "questions.md").write_text(
         f"# Review Questions\n\n> Sources: Chapter interpretations\n> Updated: {date.today().isoformat()}\n\n{questions_text or '- （暂无。）'}\n",
         encoding="utf-8",
     )
     generated.append(review / "questions.md")
     flashcards = "\n".join(
-        f"| {question} | {chapter.executive_summary or '参见章节解读。'} | [Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md) |"
+        f"| {_replace_inline_citations(question, evidence_by_id)} | "
+        f"{_replace_inline_citations(chapter.executive_summary or '参见章节解读。', evidence_by_id)} | "
+        f"[Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md) |"
         for chapter, question in questions
     )
     (review / "flashcards.md").write_text(
@@ -341,7 +486,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
         for _, claim, slug in records:
             page_id = f"{singular}-{slug}"
             entity_pages.append(page_id)
-            pages.append({"id": page_id, "title": claim.text, "path": f"{kind}/{slug}.md", "kind": singular, "relatedPages": ["book", "index"]})
+            pages.append({"id": page_id, "title": _replace_inline_citation_labels(claim.text, evidence_by_id), "path": f"{kind}/{slug}.md", "kind": singular, "relatedPages": ["book", "index"]})
     pages.extend([
         {"id": "review-questions", "title": "Review Questions", "path": "review/questions.md", "kind": "review", "relatedPages": ["book", "index"]},
         {"id": "review-flashcards", "title": "Flashcards", "path": "review/flashcards.md", "kind": "review", "relatedPages": ["book", "index"]},
@@ -353,10 +498,17 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
         if records:
             sections.append({"id": kind, "title": kind.title(), "pages": [f"{kind[:-1]}-{slug}" for _, _, slug in records]})
     sections.append({"id": "review", "title": "Review", "pages": ["review-questions", "review-flashcards"]})
-    structure = {"id": "book-wiki", "title": book.title, "description": book.overview, "pages": pages, "sections": sections}
+    structure = {
+        "id": "book-wiki",
+        "title": book.title,
+        "description": _replace_inline_citation_labels(book.overview, evidence_by_id),
+        "pages": pages,
+        "sections": sections,
+    }
     structure_path = wiki / "structure.json"
     structure_path.write_text(json.dumps(structure, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     generated.append(structure_path)
+    generated.append(_write_evidence_index(root, chapters))
     log = wiki / "log.md"
     log.write_text(
         f"# Wiki Log\n\n## [{date.today().isoformat()}] build | {book.title}\n"
@@ -375,4 +527,4 @@ def render_artifacts(root: Path) -> list[Path]:
         raise ValueError("book artifact is missing")
     book = book_from_dict(json.loads(book_path.read_text(encoding="utf-8")))
     chapters = [chapter_from_dict(json.loads(path.read_text(encoding="utf-8"))) for path in sorted(chapter_dir.glob("*.json"))]
-    return render_book(book, chapters, root)
+    return render_book(book, _hydrate_legacy_locators(chapters, root), root)

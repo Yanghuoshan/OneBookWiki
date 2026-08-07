@@ -227,6 +227,7 @@ def _refs_for(chunks: list[dict], chapter: int) -> list[EvidenceRef]:
             start_line=int(chunk.get("start_line", 0)),
             end_line=int(chunk.get("end_line", 0)),
             quote="",
+            locator=dict(chunk.get("locator") or {}),
         )
         for index, chunk in enumerate(chunks, 1)
     ]
@@ -321,6 +322,7 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
                         chapter=number,
                         start_line=int(chunk.get("start_line", 0)),
                         end_line=int(chunk.get("end_line", 0)),
+                        locator=dict(chunk.get("locator") or {}),
                     )
                     for index, chunk in enumerate(_bounded(values, options.max_input_tokens), 1)
                 ],

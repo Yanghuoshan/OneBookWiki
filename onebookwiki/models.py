@@ -18,6 +18,7 @@ class EvidenceRef:
     quote: str = ""
     page: int | None = None
     spine: str | None = None
+    locator: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def _evidence(value: dict[str, Any]) -> EvidenceRef:
         quote=str(value.get("quote", "")),
         page=int(value["page"]) if value.get("page") is not None else None,
         spine=str(value["spine"]) if value.get("spine") is not None else None,
+        locator=dict(value.get("locator") or {}),
     )
 
 

@@ -24,6 +24,7 @@ CHAPTER_META_RE = re.compile(r"^\d+$")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 NO_MATERIAL_RE = re.compile(r"^## \[[^\]]*\]\s*ingest\s*\|\s*no material:\s*`?(\S+?)`?\s*$", re.IGNORECASE)
 SKIP_ARTICLES = {"index.md", "log.md", "book.md"}
+INTERNAL_CITATION_RE = re.compile(r"(?<![\\w/])C\\d+E\\d+(?![\\w/])")
 
 @dataclass(frozen=True)
 class Chapter:
@@ -150,6 +151,8 @@ def relationship_coverage(root: Path, chapters: list[Chapter]) -> list[str]:
         for page in directory.glob("*.md"):
             targets = []
             for target in LINK_RE.findall(page.read_text(encoding="utf-8")):
+                if not target or "://" in target or target.startswith("mailto:"):
+                    continue
                 candidate = (page.parent / target.split("#", 1)[0]).resolve()
                 if candidate in known:
                     targets.append(candidate)
@@ -300,6 +303,33 @@ def structure_health(root: Path) -> list[str]:
     return sorted(set(problems))
 
 
+def citation_health(root: Path) -> list[str]:
+    """Validate the optional generated evidence index and visible citation labels."""
+    problems: list[str] = []
+    evidence_path = root / "wiki" / "evidence.json"
+    if evidence_path.is_file():
+        try:
+            payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            records = payload.get("evidence", {})
+            if not isinstance(records, dict):
+                return ["wiki/evidence.json evidence must be an object"]
+            for evidence_id, record in records.items():
+                if not isinstance(record, dict):
+                    problems.append(f"evidence record is not an object: {evidence_id}")
+                    continue
+                if not record.get("display_label"):
+                    problems.append(f"evidence record has no display label: {evidence_id}")
+                locator = record.get("locator")
+                if not isinstance(locator, dict) or not locator.get("format"):
+                    problems.append(f"evidence record has no locator: {evidence_id}")
+        except (OSError, ValueError) as error:
+            problems.append(f"wiki/evidence.json is invalid JSON: {error}")
+    for page in (root / "wiki").rglob("*.md") if (root / "wiki").is_dir() else []:
+        if INTERNAL_CITATION_RE.search(page.read_text(encoding="utf-8")):
+            problems.append(f"visible internal citation id in {relative(root, page)}")
+    return sorted(set(problems))
+
+
 def generated_health(root: Path) -> list[str]:
     """Check generated artifacts and resumable generation state."""
     problems: list[str] = []
@@ -379,7 +409,8 @@ def main(argv: list[str]) -> int:
     inventory_count = print_section("Unreferenced raw", raw_inventory(root, chapters), json_output)
     structure_count = print_section("Wiki structure", structure_health(root), json_output)
     generated_count = print_section("Generated artifacts", generated_health(root), json_output)
-    total = evidence_count + order_count + map_count + link_count + coverage_count + rag_count + inventory_count + structure_count + generated_count
+    citation_count = print_section("Citations", citation_health(root), json_output)
+    total = evidence_count + order_count + map_count + link_count + coverage_count + rag_count + inventory_count + structure_count + generated_count + citation_count
     if json_output:
         print(json.dumps({"total": total, "status": "ok" if total == 0 else "issues"}, ensure_ascii=False))
     else:

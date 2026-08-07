@@ -1,0 +1,1 @@
+{"root":["./src/main.tsx","./src/vite-env.d.ts","./src/app/bookreadershell.tsx","./src/components/citationchip.tsx","./src/components/markdownreader.tsx","./src/components/pagetree.tsx","./src/components/sourcepanel.tsx","./src/data/bookloader.ts","./src/types/wiki.ts"],"version":"5.9.3"}

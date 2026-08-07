@@ -135,17 +135,26 @@ def parse_epub(path: Path, keep_front_matter: bool = False) -> dict[str, Any]:
             if item["media_type"] == "application/x-dtbncx+xml":
                 toc_titles.update(_toc_titles(archive, opf_dir, item["href"]))
         entries: list[dict[str, Any]] = []
-        for index, itemref in enumerate(_findall(spine, "itemref") if spine is not None else [], 1):
+        for spine_index, itemref in enumerate(_findall(spine, "itemref") if spine is not None else [], 1):
             item_id = itemref.attrib.get("idref")
             item = manifest.get(item_id or "")
             if not item or "html" not in item["media_type"] and "xhtml" not in item["media_type"]:
                 continue
-            href = posixpath.normpath(posixpath.join(opf_dir, item["href"].split("#", 1)[0]))
-            title = toc_titles.get(href) or f"Chapter {index}"
+            href_value, _, fragment = item["href"].partition("#")
+            href = posixpath.normpath(posixpath.join(opf_dir, href_value))
+            title = toc_titles.get(href) or f"Chapter {spine_index}"
             body = html_to_text(_read_text(archive, href))
-            if not body or (not keep_front_matter and index == 1 and len(body.split()) < 40):
+            if not body or (not keep_front_matter and spine_index == 1 and len(body.split()) < 40):
                 continue
-            entries.append({"number": len(entries) + 1, "title": title, "href": href, "spine": item_id or "", "text": body})
+            entries.append({
+                "number": len(entries) + 1,
+                "title": title,
+                "href": href,
+                "fragment": fragment,
+                "spine": item_id or "",
+                "spine_index": spine_index,
+                "text": body,
+            })
         return {"metadata": metadata, "entries": entries, "source_hash": sha256_file(path), "format": "EPUB"}
 
 
@@ -202,7 +211,26 @@ def import_pdf(source: Path, root: Path, title: str | None = None, pages_per_cha
             encoding="utf-8",
         )
         written.append(target)
-    write_source_metadata(root, {"title": book_title, "format": "PDF", "source_name": source.name, "source_hash": sha256_file(source), "page_count": len(pages), "pages_per_chapter": pages_per_chapter, "chapter_count": chapter_count})
+    write_source_metadata(root, {
+        "schema_version": 2,
+        "title": book_title,
+        "format": "PDF",
+        "source_name": source.name,
+        "source_hash": sha256_file(source),
+        "page_count": len(pages),
+        "pages_per_chapter": pages_per_chapter,
+        "chapter_count": chapter_count,
+        "locator_policy": "pdf-physical-page-1-based",
+        "chapters": [
+            {
+                "number": number,
+                "raw_path": f"raw/chapters/{number:02d}-{slugify(book_title)}.md",
+                "physical_page_start": start + 1,
+                "physical_page_end": end,
+            }
+            for number, (start, end) in enumerate(ranges, 1)
+        ],
+    })
     return written
 
 
@@ -225,10 +253,30 @@ def import_epub(source: Path, root: Path, title: str | None = None, force: bool 
             f"> Book: {book_title}\n> Author: {metadata.get('creator', 'Unknown')}\n"
             f"> Edition: {metadata.get('edition', 'Unknown')}\n> Chapter: {entry['number']}\n"
             f"> Source: {source.name}\n> Format: EPUB\n> Spine: {entry['spine']}\n"
-            f"> Href: {entry['href']}\n> Collected: {date.today().isoformat()}\n\n"
+            f"> Spine Index: {entry.get('spine_index', '')}\n> Href: {entry['href']}\n"
+            f"> Fragment: {entry.get('fragment', '')}\n> Collected: {date.today().isoformat()}\n\n"
             f"{entry['text']}\n"
         )
         target.write_text(content, encoding="utf-8")
         written.append(target)
-    write_source_metadata(root, {"title": book_title, "author": metadata.get("creator", "Unknown"), "format": "EPUB", "source_name": source.name, "source_hash": parsed["source_hash"], "chapters": [{"number": item["number"], "title": item["title"], "href": item["href"], "spine": item["spine"]} for item in parsed["entries"]]})
+    write_source_metadata(root, {
+        "schema_version": 2,
+        "title": book_title,
+        "author": metadata.get("creator", "Unknown"),
+        "format": "EPUB",
+        "source_name": source.name,
+        "source_hash": parsed["source_hash"],
+        "locator_policy": "chapter-spine-href",
+        "chapters": [
+            {
+                "number": item["number"],
+                "title": item["title"],
+                "href": item["href"],
+                "fragment": item.get("fragment", ""),
+                "spine": item["spine"],
+                "spine_index": item.get("spine_index"),
+            }
+            for item in parsed["entries"]
+        ],
+    })
     return written

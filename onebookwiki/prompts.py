@@ -19,6 +19,7 @@ def evidence_payload(chunks: Iterable[dict]) -> list[dict]:
             "source_path": chunk.get("source_path", ""),
             "start_line": chunk.get("start_line", 0),
             "end_line": chunk.get("end_line", 0),
+            "locator": chunk.get("locator", {}),
             "text": chunk.get("text", ""),
         })
     return payload
