@@ -1,10 +1,26 @@
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { EvidenceRecord } from '../types/wiki';
 import { formatEpubLocator, formatLocator, formatPdfRange, formatSourceType } from '../data/bookLoader';
 
-type Props = { record: EvidenceRecord | null; onClose: () => void };
+type Props = {
+  record: EvidenceRecord;
+  width: number;
+  minWidth: number;
+  maxWidth: number;
+  onWidthChange: (width: number) => void;
+  onClose: () => void;
+};
 
-export default function SourcePanel({ record, onClose }: Props) {
-  if (!record) return null;
+type DragState = { pointerId: number; startClientX: number; startWidth: number };
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+export default function SourcePanel({ record, width, minWidth, maxWidth, onWidthChange, onClose }: Props) {
+  const [isResizing, setIsResizing] = useState(false);
+  const handleRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState | null>(null);
   const title = record.source_title || record.breadcrumb?.at(-1) || record.book_title || formatLocator(record);
   const details = Array.from(new Set([
     record.book_title,
@@ -15,9 +31,76 @@ export default function SourcePanel({ record, onClose }: Props) {
     formatLocator(record),
   ].filter((detail): detail is string => Boolean(detail))));
 
+  const endResize = (target?: HTMLDivElement, pointerId?: number) => {
+    if (target && typeof pointerId === 'number' && target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture(pointerId);
+    }
+    dragRef.current = null;
+    setIsResizing(false);
+  };
+
+  useEffect(() => () => endResize(handleRef.current || undefined, dragRef.current?.pointerId), []);
+
+  const updateWidth = (value: number) => onWidthChange(clamp(value, minWidth, maxWidth));
+
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.focus();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, startClientX: event.clientX, startWidth: width };
+    setIsResizing(true);
+  };
+
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    updateWidth(drag.startWidth + drag.startClientX - event.clientX);
+  };
+
+  const onPointerEnd = (event: PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+    endResize(event.currentTarget, event.pointerId);
+  };
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      updateWidth(width + step);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      updateWidth(width - step);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      updateWidth(minWidth);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      updateWidth(maxWidth);
+    }
+  };
+
   return (
-    <aside className="source-panel" aria-label="Source citation">
-      <div className="source-header"><div><span className="eyebrow">SOURCE LOCATION</span><h2>{title}</h2></div><button className="close-button" onClick={onClose} aria-label="关闭来源面板">×</button></div>
+    <aside id="source-panel" className="source-panel" data-resizing={isResizing} aria-label="Source citation">
+      <div
+        ref={handleRef}
+        className="source-resize-handle"
+        role="separator"
+        tabIndex={0}
+        aria-label="调整来源面板宽度"
+        aria-orientation="vertical"
+        aria-controls="source-panel"
+        aria-valuemin={minWidth}
+        aria-valuemax={maxWidth}
+        aria-valuenow={Math.round(width)}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerEnd}
+        onPointerCancel={onPointerEnd}
+        onLostPointerCapture={onPointerEnd}
+        onKeyDown={onKeyDown}
+      />
+      <div className="source-header"><div><span className="eyebrow">SOURCE LOCATION</span><h2>{title}</h2></div><button type="button" className="close-button" onClick={onClose} aria-label="关闭来源面板">×</button></div>
       {details.length > 0 && <div className="source-card">{details.map(detail => <span key={detail}>{detail}</span>)}</div>}
       {record.excerpt && <blockquote>{record.excerpt}</blockquote>}
     </aside>

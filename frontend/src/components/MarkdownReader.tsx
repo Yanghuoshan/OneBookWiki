@@ -1,5 +1,5 @@
 import { Fragment } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import type { EvidenceIndex, EvidenceRecord, WikiPage } from '../types/wiki';
@@ -14,6 +14,11 @@ const sanitizeSchema = {
 };
 
 const citationPattern = /^C\d+E\d+(?!\d)$/;
+const evidenceHrefPattern = /^onebookwiki:\/\/evidence\/C\d+E\d+$/;
+
+export function citationUrlTransform(value: string): string {
+  return evidenceHrefPattern.test(value) ? value : defaultUrlTransform(value);
+}
 
 type Props = {
   content: string;
@@ -37,6 +42,7 @@ export default function MarkdownReader({ content, evidence, pagePath, pagesByPat
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={[[rehypeSanitize, sanitizeSchema]]}
+      urlTransform={citationUrlTransform}
       components={{
         a({ href, children, ...props }) {
           const evidenceMatch = href?.match(/^onebookwiki:\/\/evidence\/(C\d+E\d+)$/);

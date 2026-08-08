@@ -290,7 +290,12 @@ def extract_pdf_layout(source: Path) -> tuple[list[PdfPage], list[dict[str, Any]
                     y1=float(block.get("bbox", (0, 0, 0, 0))[3]),
                     size=max((float(span.get("size", 0)) for span in spans), default=0.0),
                 ))
-        pages.append(PdfPage(number=number, text=page.get_text("text", sort=True), blocks=tuple(blocks)))
+        pages.append(PdfPage(
+            number=number,
+            text=page.get_text("text", sort=True),
+            blocks=tuple(blocks),
+            height=float(page.rect.height),
+        ))
     bookmarks: list[dict[str, Any]] = []
     for entry in document.get_toc(simple=True) or []:
         if len(entry) < 3:

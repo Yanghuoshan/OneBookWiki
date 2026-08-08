@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { formatConfidence, formatPdfRange, formatSourceType, loadBook, loadPage, resolveBookBase } from '../data/bookLoader';
 import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiStructure } from '../types/wiki';
 import PageTree from '../components/PageTree';
@@ -6,6 +6,16 @@ import MarkdownReader from '../components/MarkdownReader';
 import SourcePanel from '../components/SourcePanel';
 
 type Props = { initialStructure?: WikiStructure; initialEvidence?: EvidenceIndex };
+
+const NAVIGATION_WIDTH = 280;
+const SOURCE_PANEL_DEFAULT_WIDTH = 320;
+const SOURCE_PANEL_MIN_WIDTH = 240;
+const SOURCE_PANEL_MAX_WIDTH = 560;
+const CONTENT_MIN_WIDTH = 360;
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
 
 function sourceNodesByPageId(nodes: SourceOutlineNode[]): Map<string, SourceOutlineNode> {
   const result = new Map<string, SourceOutlineNode>();
@@ -32,6 +42,9 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   const [current, setCurrent] = useState<WikiPage | null>(null);
   const [content, setContent] = useState('');
   const [source, setSource] = useState<EvidenceRecord | null>(null);
+  const [sourcePanelWidth, setSourcePanelWidth] = useState(SOURCE_PANEL_DEFAULT_WIDTH);
+  const [gridWidth, setGridWidth] = useState(0);
+  const gridRef = useRef<HTMLElement>(null);
   const [loading, setLoading] = useState(!initialStructure);
   const [error, setError] = useState<string | null>(null);
   const bookBase = useMemo(() => resolveBookBase(), []);
@@ -66,11 +79,28 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
     window.history.replaceState({}, '', url);
   }, [bookBase, current]);
 
+  useEffect(() => {
+    if (!structure) return;
+    const grid = gridRef.current;
+    if (!grid) return;
+    const updateGridWidth = () => setGridWidth(grid.clientWidth);
+    updateGridWidth();
+    const observer = new ResizeObserver(updateGridWidth);
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [structure]);
+
   if (loading) return <div className="status-screen"><div className="loader-mark">◎</div><p>正在打开 OneBookWiki…</p></div>;
   if (error && !structure) return <div className="status-screen error-screen"><h1>无法打开这本书</h1><p>{error}</p><p className="hint">当前书籍路径为 {bookBase}。请确认该路径下存在 wiki/structure.json。</p></div>;
   if (!structure) return null;
 
   const meta = current ? pageMeta(current, sourcePageNodes.get(current.id)) : [];
+  const sourcePanelMaximumWidth = Math.max(
+    SOURCE_PANEL_MIN_WIDTH,
+    Math.min(SOURCE_PANEL_MAX_WIDTH, gridWidth - NAVIGATION_WIDTH - CONTENT_MIN_WIDTH),
+  );
+  const effectiveSourcePanelWidth = clamp(sourcePanelWidth, SOURCE_PANEL_MIN_WIDTH, sourcePanelMaximumWidth);
+  const gridStyle = { '--source-panel-width': `${effectiveSourcePanelWidth}px` } as CSSProperties;
 
   return (
     <div className="reader-shell">
@@ -79,12 +109,19 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
         <div className="book-heading"><span className="eyebrow">EVIDENCE-GROUNDED READING</span><h1>{structure.title}</h1></div>
         <div className="topbar-meta">{structure.pages.length} pages</div>
       </header>
-      <main className="reader-grid">
+      <main ref={gridRef} className="reader-grid" data-source-open={Boolean(source)} style={gridStyle}>
         <aside className="navigation-pane"><p className="pane-label">READING MAP</p><p className="description">{structure.description || '基于原始文本生成的证据导向阅读地图。'}</p><PageTree structure={structure} currentPageId={current?.id} onSelect={setCurrent} /></aside>
         <section className="content-pane" aria-live="polite">
           {current ? <><div className="content-meta">{meta.map(item => <span key={item}>{item}</span>)}</div><div className="markdown-body"><MarkdownReader content={content || '正在加载页面…'} evidence={evidence} pagePath={current.path} pagesByPath={pagesByPath} onCitation={setSource} onPageLink={setCurrent} /></div></> : <div className="empty-state"><h2>选择一个页面</h2><p>从左侧阅读地图开始浏览。</p></div>}
         </section>
-        {source && <SourcePanel record={source} onClose={() => setSource(null)} />}
+        {source && <SourcePanel
+          record={source}
+          width={effectiveSourcePanelWidth}
+          minWidth={SOURCE_PANEL_MIN_WIDTH}
+          maxWidth={sourcePanelMaximumWidth}
+          onWidthChange={setSourcePanelWidth}
+          onClose={() => setSource(null)}
+        />}
       </main>
     </div>
   );
