@@ -25,7 +25,14 @@ def evidence_payload(chunks: Iterable[dict]) -> list[dict]:
     return payload
 
 
-def chapter_prompt(chapter: int, title: str, chunks: list[dict], language: str = "zh-CN", adjacent: str = "") -> str:
+def chapter_prompt(
+    chapter: int,
+    title: str,
+    chunks: list[dict],
+    language: str = "zh-CN",
+    adjacent: str = "",
+    source_context: dict | None = None,
+) -> str:
     schema = {
         "chapter": chapter,
         "title": title,
@@ -50,7 +57,9 @@ def chapter_prompt(chapter: int, title: str, chunks: list[dict], language: str =
         "must cite one or more supplied evidence_ids. If evidence is insufficient, say so. "
         f"Write in {language}. Use a neutral Wikipedia-like explanatory tone.\n\n"
         f"SCHEMA:\n{_json(schema)}\n\n"
-        f"CHAPTER: {chapter}\nTITLE: {title}\n"
+        "The supplied unit is a reading unit from the original book. Its technical number is "
+        "only an evidence identifier; use the source title and structure path when describing it.\n\n"
+        f"READING UNIT NUMBER: {chapter}\nTITLE: {title}\nSOURCE CONTEXT:\n{_json(source_context or {})}\n"
         f"ADJACENT COMPLETED SUMMARIES:\n{adjacent or '(none)'}\n\n"
         f"EVIDENCE:\n{_json(evidence_payload(chunks))}"
     )

@@ -157,20 +157,26 @@ def _chunks_by_chapter(root: Path) -> dict[int, list[dict]]:
 
 
 def _bounded(chunks: list[dict], budget: int) -> list[dict]:
+    """Validate an imported reading part fits its generation input budget.
+
+    Source import is responsible for splitting overlong original units. Truncating
+    here would silently discard the end of a reading part, so reject an invalid
+    import configuration rather than producing an incomplete interpretation.
+    """
     selected: list[dict] = []
     used = 0
     for chunk in chunks:
         size = int(chunk.get("token_count") or count_tokens(str(chunk.get("text", ""))))
-        if selected and used + size > budget:
-            break
-        if not selected and size > budget:
-            text = str(chunk.get("text", ""))
-            while len(text) > 1 and count_tokens(text) > budget:
-                text = text[: max(1, len(text) // 2)]
-            copied = dict(chunk)
-            copied["text"] = text
-            selected.append(copied)
-            break
+        if size > budget:
+            raise GenerationError(
+                f"imported reading unit contains a {size}-token chunk exceeding generation budget {budget}; "
+                "re-import with a smaller --max-unit-tokens"
+            )
+        if used + size > budget:
+            raise GenerationError(
+                f"imported reading unit requires more than generation budget {budget}; "
+                "re-import with a smaller --max-unit-tokens"
+            )
         selected.append(chunk)
         used += size
     return selected
@@ -233,6 +239,33 @@ def _refs_for(chunks: list[dict], chapter: int) -> list[EvidenceRef]:
     ]
 
 
+def _source_units(root: Path) -> dict[int, dict[str, Any]]:
+    """Return generation metadata keyed by the stable technical chapter number."""
+    source = root / ".onebookwiki" / "source.json"
+    if not source.is_file():
+        return {}
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    records = (value.get("source_structure") or {}).get("units") or value.get("chapters") or []
+    return {
+        int(item["chapter"]): dict(item)
+        for item in records
+        if isinstance(item, dict) and str(item.get("chapter", "")).isdigit()
+    }
+
+
+def _book_title(root: Path) -> str:
+    source = root / ".onebookwiki" / "source.json"
+    if not source.is_file():
+        return "Untitled book"
+    try:
+        return str(json.loads(source.read_text(encoding="utf-8")).get("title") or "Untitled book")
+    except (OSError, ValueError):
+        return "Untitled book"
+
+
 def _claim_ids(value: dict[str, Any]) -> set[str]:
     result: set[str] = set()
     for key in ("evidence_examples", "important_quotations", "cross_chapter_connections", "claims", "themes", "concepts", "arguments", "tensions"):
@@ -246,12 +279,32 @@ def generate_chapters(root: Path, options: GenerationOptions | None = None, chap
     options = options or GenerationOptions()
     store = CheckpointStore(root, options.run_id)
     by_chapter = _chunks_by_chapter(root)
+    source_units = _source_units(root)
+    book_title = _book_title(root)
     selected_numbers = chapters or sorted(by_chapter)
     if options.dry_run:
         for number in selected_numbers:
             chunks = _bounded(by_chapter[number], options.max_input_tokens)
+            source_unit = source_units.get(number, {})
+            title = str(source_unit.get("title") or f"Reading unit {number}")
             node_id = f"chapter:{number}"
-            store.node(node_id).update(status="pending", input_tokens=sum(int(c.get("token_count", 0)) for c in chunks))
+            store.node(node_id).update(
+                status="pending",
+                title=title,
+                source_unit_id=str(source_unit.get("source_unit_id", "")),
+                source_title=str(source_unit.get("source_title") or title),
+                source_type=str(source_unit.get("kind", "")),
+                breadcrumb=list(source_unit.get("breadcrumb") or []),
+                physical_page_start=source_unit.get("physical_page_start"),
+                physical_page_end=source_unit.get("physical_page_end"),
+                spine=str(source_unit.get("spine", "")),
+                spine_index=source_unit.get("spine_index"),
+                href=str(source_unit.get("href", "")),
+                fragment=str(source_unit.get("fragment", "")),
+                part=source_unit.get("part", 1),
+                part_count=source_unit.get("part_count", 1),
+                input_tokens=sum(int(c.get("token_count", 0)) for c in chunks),
+            )
         store.save()
         _progress(options, f"generation plan: {len(selected_numbers)} chapter node(s) pending")
         return store
@@ -261,13 +314,27 @@ def generate_chapters(root: Path, options: GenerationOptions | None = None, chap
             chunks = _bounded(by_chapter[number], options.max_input_tokens)
             if not chunks:
                 continue
-            title = f"Chapter {number}"
+            source_unit = source_units.get(number, {})
+            title = str(source_unit.get("title") or f"Reading unit {number}")
             raw = root / str(chunks[0].get("source_path", ""))
-            if raw.is_file():
+            if not source_unit and raw.is_file():
                 first = raw.read_text(encoding="utf-8").splitlines()
                 if first and first[0].startswith("# "):
-                    title = first[0][2:].strip().removeprefix(f"Chapter {number}: ").strip() or title
-            prompt = chapter_prompt(number, title, chunks, options.language)
+                    title = first[0][2:].strip() or title
+            prompt = chapter_prompt(number, title, chunks, options.language, source_context={
+                "book_title": book_title,
+                "source_unit_id": source_unit.get("source_unit_id", ""),
+                "source_type": source_unit.get("kind", ""),
+                "breadcrumb": source_unit.get("breadcrumb", []),
+                "physical_page_start": source_unit.get("physical_page_start"),
+                "physical_page_end": source_unit.get("physical_page_end"),
+                "spine": source_unit.get("spine", ""),
+                "spine_index": source_unit.get("spine_index"),
+                "href": source_unit.get("href", ""),
+                "fragment": source_unit.get("fragment", ""),
+                "part": source_unit.get("part", 1),
+                "part_count": source_unit.get("part_count", 1),
+            })
             node_id = f"chapter:{number}"
             input_hash = digest([(c.get("chunk_id"), c.get("content_hash")) for c in chunks])
             model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
@@ -287,7 +354,27 @@ def generate_chapters(root: Path, options: GenerationOptions | None = None, chap
                 raise GenerationError(f"chapter {number} contains unknown evidence ids: {sorted(unknown)}")
             refs = _refs_for(chunks, number)
             artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact.write_text(json.dumps({**value, "chapter": number, "title": title, "evidence": to_dict(refs), "source_fingerprint": input_hash, "generator_fingerprint": model_hash}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            artifact_metadata = {
+                "chapter": number,
+                "title": title,
+                "source_unit_id": str(source_unit.get("source_unit_id", "")),
+                "source_title": str(source_unit.get("source_title") or title),
+                "source_type": str(source_unit.get("kind", "")),
+                "breadcrumb": list(source_unit.get("breadcrumb") or []),
+                "physical_page_start": source_unit.get("physical_page_start"),
+                "physical_page_end": source_unit.get("physical_page_end"),
+                "spine": source_unit.get("spine", ""),
+                "spine_index": source_unit.get("spine_index"),
+                "href": source_unit.get("href", ""),
+                "fragment": source_unit.get("fragment", ""),
+                "structure_confidence": source_unit.get("confidence", 0.0),
+                "part": source_unit.get("part", 1),
+                "part_count": source_unit.get("part_count", 1),
+                "evidence": to_dict(refs),
+                "source_fingerprint": input_hash,
+                "generator_fingerprint": model_hash,
+            }
+            artifact.write_text(json.dumps({**value, **artifact_metadata}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
             store.mark(node_id, "completed", input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash, artifact_path=str(artifact.relative_to(root)), artifact_hash=artifact_hash)
             _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): completed")
@@ -308,10 +395,28 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
     chapters = _load_chapters(root)
     if not chapters and options.dry_run:
         by_chapter = _chunks_by_chapter(root)
-        chapters = [
-            ChapterInterpretation(
+        source_units = _source_units(root)
+        chapters = []
+        for number, values in sorted(by_chapter.items()):
+            source_unit = source_units.get(number, {})
+            title = str(source_unit.get("title") or f"Reading unit {number}")
+            chunks = _bounded(values, options.max_input_tokens)
+            chapters.append(ChapterInterpretation(
                 chapter=number,
-                title=f"Chapter {number}",
+                title=title,
+                source_unit_id=str(source_unit.get("source_unit_id", "")),
+                source_title=str(source_unit.get("source_title") or title),
+                source_type=str(source_unit.get("kind", "")),
+                breadcrumb=list(source_unit.get("breadcrumb") or []),
+                physical_page_start=source_unit.get("physical_page_start"),
+                physical_page_end=source_unit.get("physical_page_end"),
+                spine=str(source_unit.get("spine", "")),
+                spine_index=source_unit.get("spine_index"),
+                href=str(source_unit.get("href", "")),
+                fragment=str(source_unit.get("fragment", "")),
+                structure_confidence=float(source_unit.get("confidence", 0.0) or 0.0),
+                part=int(source_unit.get("part", 1) or 1),
+                part_count=int(source_unit.get("part_count", 1) or 1),
                 executive_summary="pending generation",
                 core_thesis="pending generation",
                 evidence=[
@@ -324,11 +429,9 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
                         end_line=int(chunk.get("end_line", 0)),
                         locator=dict(chunk.get("locator") or {}),
                     )
-                    for index, chunk in enumerate(_bounded(values, options.max_input_tokens), 1)
+                    for index, chunk in enumerate(chunks, 1)
                 ],
-            )
-            for number, values in sorted(by_chapter.items())
-        ]
+            ))
     if not chapters:
         raise GenerationError("no chapter artifacts; generate chapters first")
     cards = [{"chapter": item.chapter, "title": item.title, "summary": item.executive_summary, "thesis": item.core_thesis, "claims": to_dict(item.claims)} for item in chapters]
@@ -369,13 +472,7 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
             store.node(node_id).update(status="pending", input_tokens=count_tokens(prompt))
         if artifact.is_file():
             rollups.append(rollup_from_dict(json.loads(artifact.read_text(encoding="utf-8"))))
-    title = "Untitled book"
-    source = root / ".onebookwiki" / "source.json"
-    if source.is_file():
-        try:
-            title = str(json.loads(source.read_text(encoding="utf-8")).get("title") or title)
-        except (OSError, ValueError):
-            pass
+    title = _book_title(root)
     prompt = book_prompt([to_dict(item) for item in rollups], cards, title, options.language)
     node_id = "book:synthesis"
     artifact = root / ".onebookwiki" / "artifacts" / "book.json"

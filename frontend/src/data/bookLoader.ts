@@ -1,4 +1,4 @@
-import type { EvidenceIndex, EvidenceRecord, Locator, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
+import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
 
 const configuredBase = ((import.meta.env.VITE_ONEBOOKWIKI_BASE_URL as string | undefined) || '/book').replace(/\/$/, '');
 const bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -27,35 +27,62 @@ async function getJson<T>(base: string, path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function normalizeOutline(nodes: SourceOutlineNode[] | undefined): SourceOutlineNode[] {
+  return (nodes || []).map(node => ({
+    ...node,
+    breadcrumb: Array.isArray(node.breadcrumb) ? node.breadcrumb : [],
+    pageIds: Array.isArray(node.pageIds) ? node.pageIds : [],
+    children: normalizeOutline(node.children),
+  }));
+}
+
 export function normalizeStructure(value: WikiStructure): WikiStructure {
-  const pages = Array.isArray(value.pages) ? value.pages : [];
-  const sections = Array.isArray(value.sections) ? value.sections : [];
-  const rootSections = value.rootSections?.length ? value.rootSections : sections.map(section => section.id);
   return {
     ...value,
-    pages,
-    sections,
-    rootSections,
+    pages: Array.isArray(value.pages) ? value.pages : [],
+    sections: Array.isArray(value.sections) ? value.sections : [],
+    sourceOutline: normalizeOutline(value.sourceOutline),
   };
 }
 
+export function formatPdfRange(start?: number, end?: number): string | undefined {
+  if (typeof start !== 'number') return undefined;
+  const last = typeof end === 'number' ? end : start;
+  return start === last ? `PDF p. ${start}` : `PDF pp. ${start}-${last}`;
+}
+
+export function formatEpubLocator(record: Pick<EvidenceRecord, 'spine' | 'spine_index' | 'href' | 'fragment' | 'locator'>): string | undefined {
+  const locator = record.locator || {};
+  const href = record.href || (typeof locator.href === 'string' ? locator.href : undefined);
+  const fragment = record.fragment || (typeof locator.fragment === 'string' ? locator.fragment : undefined);
+  const spineIndex = typeof record.spine_index === 'number'
+    ? record.spine_index
+    : typeof locator.spine_index === 'number'
+      ? locator.spine_index
+      : undefined;
+  const spineId = record.spine || (typeof locator.spine_id === 'string' ? locator.spine_id : undefined);
+  const location = href ? `${href}${fragment ? `#${fragment}` : ''}` : undefined;
+  const spine = typeof spineIndex === 'number' ? `Spine ${spineIndex}` : spineId ? `Spine ${spineId}` : undefined;
+  return [spine, location].filter((value): value is string => Boolean(value)).join(' · ') || undefined;
+}
+
+export function formatConfidence(confidence?: number): string | undefined {
+  if (typeof confidence !== 'number') return undefined;
+  return `Confidence ${Math.round(confidence * 100)}%`;
+}
+
+export function formatSourceType(sourceType?: string): string | undefined {
+  if (!sourceType) return undefined;
+  return sourceType.replace(/[_-]+/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
 export function formatLocator(record: EvidenceRecord): string {
-  const locator: Locator = record.locator || (record.page ? { format: 'PDF', physical_page_start: record.page, physical_page_end: record.page } : {});
-  const format = (locator.format || '').toUpperCase();
-  if (format === 'PDF') {
-    const start = locator.physical_page_start;
-    const end = locator.physical_page_end ?? start;
-    if (typeof start === 'number' && typeof end === 'number') return start === end ? `PDF p. ${start}` : `PDF pp. ${start}-${end}`;
-    return `PDF Chapter ${record.chapter}`;
-  }
-  if (format === 'EPUB') {
-    let label = `EPUB Ch. ${locator.chapter ?? record.chapter}`;
-    if (locator.spine_index !== undefined) label += ` · Spine ${locator.spine_index}`;
-    else if (locator.spine_id) label += ` · Spine ${locator.spine_id}`;
-    if (locator.href) label += ` · ${locator.href}${locator.fragment ? `#${locator.fragment}` : ''}`;
-    return label;
-  }
-  return `Chapter ${record.chapter} · lines ${record.start_line}-${record.end_line}`;
+  return record.display_label
+    || formatPdfRange(record.physical_page_start, record.physical_page_end)
+    || formatEpubLocator(record)
+    || record.source_title
+    || record.book_title
+    || 'Source reference';
 }
 
 export function resolveEvidence(id: string, evidence: EvidenceIndex): EvidenceRecord | undefined {
@@ -77,5 +104,6 @@ export async function loadPage(page: WikiPage, base = resolveBookBase()): Promis
 }
 
 export function sectionPages(structure: WikiStructure, section: WikiSection): WikiPage[] {
-  return section.pages.map(id => structure.pages.find(page => page.id === id)).filter((page): page is WikiPage => Boolean(page));
+  const pagesById = new Map(structure.pages.map(page => [page.id, page]));
+  return section.pages.map(id => pagesById.get(id)).filter((page): page is WikiPage => Boolean(page));
 }

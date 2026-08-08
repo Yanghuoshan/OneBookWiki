@@ -46,10 +46,13 @@ Third page text.
             import_pdf(source, root, title="Sample", pages_per_chapter=2, pages=["one", "two", "three"])
             source = json.loads((root / ".onebookwiki" / "source.json").read_text(encoding="utf-8"))
             self.assertEqual(source["locator_policy"], "pdf-physical-page-1-based")
-            self.assertEqual(source["chapters"], [
-                {"number": 1, "raw_path": "raw/chapters/01-sample.md", "physical_page_start": 1, "physical_page_end": 2},
-                {"number": 2, "raw_path": "raw/chapters/02-sample.md", "physical_page_start": 3, "physical_page_end": 3},
+            self.assertEqual(source["schema_version"], 3)
+            chapters = source["source_structure"]["units"]
+            self.assertEqual([(item["chapter"], item["raw_path"], item["physical_page_start"], item["physical_page_end"]) for item in chapters], [
+                (1, "raw/chapters/01-pdf-pp-1-2.md", 1, 2),
+                (2, "raw/chapters/02-pdf-pp-3-3.md", 3, 3),
             ])
+            self.assertTrue(all(item["source_unit_id"] for item in chapters))
 
     def test_rendered_citations_use_readable_pdf_labels(self):
         ref = EvidenceRef(
@@ -80,6 +83,70 @@ Third page text.
             self.assertIn("PDF pp. 4-5", rendered)
             self.assertNotIn("`C1E1`", rendered)
             self.assertEqual(evidence["evidence"]["C1E1"]["display_label"], "PDF pp. 4-5")
+
+    def test_rendered_structure_keeps_source_outline_page_ids_valid(self):
+        chapter = ChapterInterpretation(
+            chapter=1,
+            title="第一章 开始",
+            source_unit_id="unit-01",
+            source_title="第一章 开始",
+            source_type="chapter",
+            breadcrumb=["第一部", "第一章 开始"],
+            physical_page_start=5,
+            physical_page_end=8,
+            executive_summary="摘要",
+        )
+        book = BookSynthesis(title="示例书")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / ".onebookwiki" / "source.json"
+            source.parent.mkdir(parents=True)
+            source.write_text(json.dumps({"source_structure": {"outline": [{
+                "id": "unit-01", "title": "第一章 开始", "kind": "chapter",
+                "pageIds": ["chapter-01", "chapter-99"], "children": [],
+            }]}}, ensure_ascii=False), encoding="utf-8")
+            render_book(book, [chapter], root)
+            structure = json.loads((root / "wiki" / "structure.json").read_text(encoding="utf-8"))
+            self.assertEqual(structure["sourceOutline"][0]["pageIds"], ["chapter-01"])
+            self.assertEqual(structure["pages"][2]["sourceTitle"], "第一章 开始")
+
+    def test_rendered_epub_structure_and_evidence_keep_spine_location(self):
+        ref = EvidenceRef(
+            evidence_id="C1E1",
+            chunk_id="0001-0001",
+            source_path="raw/chapters/01-introduction.md",
+            chapter=1,
+            start_line=1,
+            end_line=2,
+            locator={"format": "EPUB", "chapter": 1, "spine_index": 3, "href": "OEBPS/one.xhtml", "fragment": "start"},
+        )
+        chapter = ChapterInterpretation(
+            chapter=1,
+            title="Introduction",
+            source_unit_id="epub-unit-01",
+            source_title="Introduction",
+            source_type="chapter",
+            breadcrumb=["Part One", "Introduction"],
+            spine="chapter-one",
+            spine_index=3,
+            href="OEBPS/one.xhtml",
+            fragment="start",
+            executive_summary="Summary",
+            evidence=[ref],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / ref.source_path
+            raw.parent.mkdir(parents=True)
+            raw.write_text("# Introduction\n\n> Format: EPUB\n> Spine: chapter-one\n> Spine Index: 3\n> Href: OEBPS/one.xhtml\n> Fragment: start\n", encoding="utf-8")
+            render_book(BookSynthesis(title="EPUB Book"), [chapter], root)
+            structure = json.loads((root / "wiki" / "structure.json").read_text(encoding="utf-8"))
+            page = next(item for item in structure["pages"] if item["id"] == "chapter-01")
+            self.assertEqual(page["spineIndex"], 3)
+            self.assertEqual(page["href"], "OEBPS/one.xhtml")
+            evidence = json.loads((root / "wiki" / "evidence.json").read_text(encoding="utf-8"))
+            self.assertEqual(evidence["evidence"]["C1E1"]["spine_index"], 3)
+            self.assertEqual(evidence["evidence"]["C1E1"]["href"], "OEBPS/one.xhtml")
 
     def test_epub_label_never_uses_pdf_page(self):
         ref = EvidenceRef(

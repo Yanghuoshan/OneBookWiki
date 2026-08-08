@@ -34,6 +34,19 @@ class Claim:
 class ChapterInterpretation:
     chapter: int
     title: str
+    source_unit_id: str = ""
+    source_title: str = ""
+    source_type: str = ""
+    breadcrumb: list[str] = field(default_factory=list)
+    physical_page_start: int | None = None
+    physical_page_end: int | None = None
+    spine: str = ""
+    spine_index: int | None = None
+    href: str = ""
+    fragment: str = ""
+    structure_confidence: float = 0.0
+    part: int = 1
+    part_count: int = 1
     purpose: str = ""
     executive_summary: str = ""
     core_thesis: str = ""
@@ -128,6 +141,19 @@ def chapter_from_dict(value: dict[str, Any]) -> ChapterInterpretation:
     return ChapterInterpretation(
         chapter=int(value.get("chapter", 0)),
         title=str(value.get("title", "")),
+        source_unit_id=str(value.get("source_unit_id", "")),
+        source_title=str(value.get("source_title", "")),
+        source_type=str(value.get("source_type", value.get("kind", ""))),
+        breadcrumb=[str(item) for item in value.get("breadcrumb", ())],
+        physical_page_start=int(value["physical_page_start"]) if value.get("physical_page_start") is not None else None,
+        physical_page_end=int(value["physical_page_end"]) if value.get("physical_page_end") is not None else None,
+        spine=str(value.get("spine", "")),
+        spine_index=int(value["spine_index"]) if value.get("spine_index") is not None else None,
+        href=str(value.get("href", "")),
+        fragment=str(value.get("fragment", "")),
+        structure_confidence=float(value.get("structure_confidence", value.get("confidence", 0.0)) or 0.0),
+        part=int(value.get("part", 1) or 1),
+        part_count=int(value.get("part_count", 1) or 1),
         purpose=str(value.get("purpose", "")),
         executive_summary=str(value.get("executive_summary", "")),
         core_thesis=str(value.get("core_thesis", "")),

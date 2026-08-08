@@ -276,6 +276,42 @@ def structure_health(root: Path) -> list[str]:
         for related in page.get("relatedPages", []):
             if related not in page_ids:
                 problems.append(f"structure page {page['id']} references unknown related page: {related}")
+
+    def check_outline(nodes: object, prefix: str = "sourceOutline") -> None:
+        if not isinstance(nodes, list):
+            problems.append(f"{prefix} must be an array")
+            return
+        node_ids: set[str] = set()
+        def visit(items: list[object], location: str) -> None:
+            for index, node in enumerate(items, 1):
+                node_location = f"{location}[{index}]"
+                if not isinstance(node, dict):
+                    problems.append(f"{node_location} is not an object")
+                    continue
+                node_id = node.get("id")
+                if not isinstance(node_id, str) or not node_id:
+                    problems.append(f"{node_location} has no id")
+                elif node_id in node_ids:
+                    problems.append(f"sourceOutline has duplicate node id: {node_id}")
+                else:
+                    node_ids.add(node_id)
+                page_ids = node.get("pageIds", [])
+                if not isinstance(page_ids, list):
+                    problems.append(f"{node_location} pageIds must be an array")
+                else:
+                    for page_id in page_ids:
+                        if page_id not in page_ids_all:
+                            problems.append(f"{node_location} references unknown page: {page_id}")
+                children = node.get("children", [])
+                if not isinstance(children, list):
+                    problems.append(f"{node_location} children must be an array")
+                else:
+                    visit(children, f"{node_location}.children")
+        page_ids_all = page_ids
+        visit(nodes, prefix)
+
+    if "sourceOutline" in value:
+        check_outline(value.get("sourceOutline"))
     section_ids: set[str] = set()
     for index, section in enumerate(sections, 1):
         if not isinstance(section, dict):
@@ -300,6 +336,28 @@ def structure_health(root: Path) -> list[str]:
         problems.append(f"structure omits wiki page: {page_path}")
     for page_path in sorted(page_paths - expected_paths):
         problems.append(f"structure references non-page: {page_path}")
+    report_path = root / ".onebookwiki" / "structure-report.json"
+    source_path = root / ".onebookwiki" / "source.json"
+    source_format = ""
+    if source_path.is_file():
+        try:
+            source_format = str(json.loads(source_path.read_text(encoding="utf-8")).get("format", "")).upper()
+        except (OSError, ValueError):
+            problems.append(".onebookwiki/source.json is invalid JSON")
+    if source_format == "PDF":
+        if not report_path.is_file():
+            problems.append("PDF source is missing .onebookwiki/structure-report.json")
+        else:
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                if not isinstance(report, dict):
+                    problems.append("structure report must be a JSON object")
+                elif report.get("ocr") != "disabled":
+                    problems.append("structure report must declare OCR disabled")
+                elif not isinstance(report.get("selected_method"), str):
+                    problems.append("structure report has no selected_method")
+            except (OSError, ValueError) as error:
+                problems.append(f"structure report is invalid JSON: {error}")
     return sorted(set(problems))
 
 

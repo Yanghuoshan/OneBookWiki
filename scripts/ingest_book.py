@@ -38,6 +38,7 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
         index.manifest.embedding_model = "none" if backend == "lexical" else "configured"
         index.manifest.chunks.clear()
         index.manifest.chapters.clear()
+    removed = index.manifest.prune_missing_chapters(root)
     added = changed = reused = 0
     for path in sorted(raw_dir.glob("*.md")):
         chapter = chapter_number(path)
@@ -57,6 +58,8 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
         changed += 1
         print(f"indexed chapter {chapter}: {len(chunks)} chunk(s), {len(old_ids)} replaced")
     index.save()
+    if removed["paths"]:
+        print(f"pruned {len(removed['paths'])} stale raw chapter(s)", file=sys.stderr)
     return changed, added, reused
 
 
@@ -66,6 +69,12 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
         raise ValueError(f"no raw/chapters directory under {root}")
     embedder = build_embedder(provider)
     index = CloudVectorIndex(root, embedder)
+    removed = index.manifest.prune_missing_chapters(root)
+    if removed["chunk_ids"]:
+        vectors = index._load_vectors()
+        for chunk_id in removed["chunk_ids"]:
+            vectors.pop(chunk_id, None)
+        index._save_vectors(vectors)
     changed = added = reused = 0
     for path in sorted(raw_dir.glob("*.md")):
         chapter = chapter_number(path)
@@ -90,6 +99,8 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
         changed += 1
         added += new_count
         print(f"embedded chapter {chapter}: {new_count} chunk(s), {replaced} replaced")
+    if removed["paths"]:
+        print(f"pruned {len(removed['paths'])} stale raw chapter(s)", file=sys.stderr)
     return changed, added, reused
 
 

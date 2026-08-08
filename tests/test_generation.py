@@ -63,6 +63,48 @@ class GenerationTest(unittest.TestCase):
             self.assertEqual(node["status"], "completed")
             self.assertTrue(node["repaired_json"])
 
+    def test_generation_persists_source_unit_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_index(root)
+            metadata = {
+                "title": "Source Book",
+                "source_structure": {
+                    "units": [{
+                        "chapter": 1,
+                        "source_unit_id": "unit-01",
+                        "title": "第一章 开始",
+                        "source_title": "第一章 开始",
+                        "kind": "chapter",
+                        "breadcrumb": ["第一部", "第一章 开始"],
+                        "physical_page_start": 5,
+                        "physical_page_end": 8,
+                        "spine": "chapter-one",
+                        "spine_index": 4,
+                        "href": "OEBPS/chapter-one.xhtml",
+                        "fragment": "opening",
+                        "confidence": 0.91,
+                        "part": 1,
+                        "part_count": 2,
+                    }]
+                },
+            }
+            source = root / ".onebookwiki" / "source.json"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+            with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=json.dumps(self.valid), model="test")):
+                generate_chapters(root, GenerationOptions(provider="test"))
+            artifact = json.loads((root / ".onebookwiki" / "artifacts" / "chapters" / "0001.json").read_text(encoding="utf-8"))
+            self.assertEqual(artifact["title"], "第一章 开始")
+            self.assertEqual(artifact["source_unit_id"], "unit-01")
+            self.assertEqual(artifact["breadcrumb"], ["第一部", "第一章 开始"])
+            self.assertEqual(artifact["physical_page_start"], 5)
+            self.assertEqual(artifact["spine"], "chapter-one")
+            self.assertEqual(artifact["spine_index"], 4)
+            self.assertEqual(artifact["href"], "OEBPS/chapter-one.xhtml")
+            self.assertEqual(artifact["fragment"], "opening")
+            self.assertEqual(artifact["part_count"], 2)
+
     def test_rollup_accepts_evidence_from_its_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

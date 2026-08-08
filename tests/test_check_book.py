@@ -54,6 +54,22 @@ class BookCheckerTest(unittest.TestCase):
             checked = run(CHECKER, root)
             self.assertIn("stale chapter hash: raw/chapters/01-attention.md", checked.stdout)
 
+    def test_pdf_structure_report_requires_explicit_ocr_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.copy_example(root)
+            structure = root / "wiki" / "structure.json"
+            structure.write_text('{"pages": [], "sections": [], "sourceOutline": []}', encoding="utf-8")
+            metadata = root / ".onebookwiki" / "source.json"
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_text('{"format": "PDF"}', encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertIn("PDF source is missing .onebookwiki/structure-report.json", checked.stdout)
+            report = metadata.parent / "structure-report.json"
+            report.write_text('{"selected_method": "ranges", "ocr": "enabled"}', encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertIn("structure report must declare OCR disabled", checked.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -111,6 +111,41 @@ python -m unittest discover -s tests -v
 
 Use one Markdown/text file per chapter where possible. Do not ingest one giant book file: chapter boundaries enable incremental updates, chapter filtering, summaries, and smaller prompts. `query_book.py` enforces a context token budget, removes duplicate chunks, and limits the number of chunks per chapter. `--max-tokens` remains the hard retrieved-evidence budget; `--max-output-tokens` is a separate answer budget. Generation uses only the assembled evidence, cites chapter/source/line metadata, and must state when the evidence is insufficient. Set `ONEBOOKWIKI_LLM_CONTEXT_WINDOW` when the generation endpoint has a known prompt limit so evidence is reduced before the request.
 
+## 前端阅读器
+
+前端位于 `frontend/`，是一个独立的 React/Vite 阅读器。启动前，请先为目标书籍生成 `wiki/structure.json`、Markdown 页面和 `wiki/evidence.json`；书籍目录放在 `books/<book-id>/` 下。建议使用当前 Node.js LTS 版本。
+
+在 PowerShell 中启动开发服务器：
+
+```powershell
+cd D:\workspace\deepwiki4book\onebookwiki\frontend
+npm install
+npm run dev -- --host 127.0.0.1
+```
+
+启动后在浏览器打开：
+
+```text
+http://127.0.0.1:5173/book                  # 默认书籍 books/zhenshi
+http://127.0.0.1:5173/book/zhenshi          # 指定书籍
+http://127.0.0.1:5173/book/aideduo          # 另一本已生成的书籍
+http://127.0.0.1:5173/book/aideduo?page=... # 直接打开 structure.json 中的页面 ID
+```
+
+`<book-id>` 只能包含字母、数字、`_` 和 `-`，并且必须对应 `books/` 下的目录。开发服务器会从 `books/<book-id>/wiki/` 读取 JSON 和 Markdown 文件。
+
+构建生产版本并在本机预览：
+
+```powershell
+cd D:\workspace\deepwiki4book\onebookwiki\frontend
+npm run build
+npm run preview -- --host 127.0.0.1
+```
+
+`npm run build` 只会生成 `frontend/dist/`，不会复制 `books/`。部署时还需要发布书籍的 `books/<book-id>/wiki/` 静态文件，并将 `/book`、`/book/<book-id>` 等页面请求重写到 `frontend/dist/index.html`；不要重写 `/book/<book-id>/wiki/...`，这些请求必须返回实际的 JSON 或 Markdown 文件。
+
+更多路由和部署配置请参见 [`frontend/README.md`](frontend/README.md)。
+
 ## Skill
 
 Copy `SKILL.md` and `references/` into an Agent Skills-compatible directory. The Skill defines Ingest, Query, Review, and Lint behavior; the CLI provides deterministic indexing and checking.

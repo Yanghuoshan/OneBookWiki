@@ -49,6 +49,10 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--book-title")
     parser.add_argument("--pages-per-chapter", type=int)
     parser.add_argument("--chapter-count", type=int)
+    parser.add_argument("--structure", choices=("auto", "bookmarks", "toc", "headings", "ranges"), default="auto")
+    parser.add_argument("--structure-min-confidence", type=float, default=0.72)
+    parser.add_argument("--structure-report")
+    parser.add_argument("--max-unit-tokens", type=int, default=12000)
     parser.add_argument("--keep-front-matter", action="store_true")
     parser.add_argument("--force", action="store_true", help="replace existing imported raw chapters")
     parser.add_argument("--resume", action="store_true", help="resume the latest generation run")
@@ -79,7 +83,19 @@ def main(argv: list[str]) -> int:
             print("[1/4] resume: preserving existing imported raw chapters")
         elif suffix == ".pdf":
             print("[1/4] importing PDF")
-            imported = import_pdf(source, root, args.book_title, args.pages_per_chapter, args.chapter_count, args.force)
+            report = Path(args.structure_report).resolve() if args.structure_report else None
+            imported = import_pdf(
+                source,
+                root,
+                args.book_title,
+                args.pages_per_chapter,
+                args.chapter_count,
+                args.force,
+                structure=args.structure,
+                structure_min_confidence=args.structure_min_confidence,
+                structure_report=report,
+                max_unit_tokens=args.max_unit_tokens,
+            )
             print(f"imported {len(imported)} raw chapter file(s)")
         else:
             print("[1/4] importing EPUB")

@@ -55,3 +55,17 @@ class Manifest:
         digest = content_hash if content_hash is not None else self.chapter_hash(path)
         self.chapters[key] = {"chapter": chapter, "content_hash": digest, "chunk_ids": sorted(new_ids)}
         return old_ids - new_ids, new_ids - old_ids
+
+    def prune_missing_chapters(self, root: Path) -> dict[str, set[str]]:
+        """Remove manifest chapters and chunks whose raw files no longer exist."""
+        removed_paths: set[str] = set()
+        removed_chunk_ids: set[str] = set()
+        for key, chapter in list(self.chapters.items()):
+            if (root / key).is_file():
+                continue
+            removed_paths.add(key)
+            self.chapters.pop(key, None)
+            for chunk_id in chapter.get("chunk_ids", []):
+                removed_chunk_ids.add(chunk_id)
+                self.chunks.pop(chunk_id, None)
+        return {"paths": removed_paths, "chunk_ids": removed_chunk_ids}

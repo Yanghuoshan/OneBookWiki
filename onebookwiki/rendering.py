@@ -1,6 +1,7 @@
 """Deterministic Wikipedia-like Markdown rendering for validated artifacts."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import replace
@@ -107,7 +108,25 @@ def _evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> dict[s
     return result
 
 
-def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> Path:
+def _source_metadata(root: Path) -> dict:
+    path = root / ".onebookwiki" / "source.json"
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _chapter_label(chapter: ChapterInterpretation) -> str:
+    return chapter.title or chapter.source_title or f"Reading unit {chapter.chapter}"
+
+
+def _chapter_link(chapter: ChapterInterpretation, prefix: str = "") -> str:
+    return f"[{_chapter_label(chapter)}]({prefix}chapters/{chapter.chapter:02d}-{slugify(_chapter_label(chapter))}.md)"
+
+
+def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation], book_title: str = "") -> Path:
     source_hash = ""
     source_path = root / ".onebookwiki" / "source.json"
     if source_path.is_file():
@@ -115,13 +134,27 @@ def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> 
             source_hash = str(json.loads(source_path.read_text(encoding="utf-8")).get("source_hash", ""))
         except (OSError, ValueError):
             pass
+    chapter_by_number = {chapter.chapter: chapter for chapter in chapters}
     records = {}
     for evidence_id, ref in _evidence_index(root, chapters).items():
         excerpt = ""
         raw_path = root / ref.source_path
         if raw_path.is_file() and ref.start_line > 0 and ref.end_line >= ref.start_line:
             excerpt = "\n".join(raw_path.read_text(encoding="utf-8").splitlines()[ref.start_line - 1 : ref.end_line]).strip()[:800]
-        records[evidence_id] = {**to_dict(ref), "display_label": display_label(ref), "excerpt": excerpt, "source_hash": source_hash}
+        chapter = chapter_by_number.get(ref.chapter)
+        semantic = {
+            "book_title": book_title,
+            "source_title": _chapter_label(chapter) if chapter else "",
+            "breadcrumb": list(chapter.breadcrumb) if chapter else [],
+            "source_type": chapter.source_type if chapter else "",
+            "physical_page_start": chapter.physical_page_start if chapter else None,
+            "physical_page_end": chapter.physical_page_end if chapter else None,
+            "spine": chapter.spine or None if chapter else None,
+            "spine_index": chapter.spine_index if chapter else None,
+            "href": chapter.href or None if chapter else None,
+            "fragment": chapter.fragment or None if chapter else None,
+        }
+        records[evidence_id] = {**to_dict(ref), **semantic, "display_label": display_label(ref), "excerpt": excerpt, "source_hash": source_hash}
     payload = {"schema_version": 1, "evidence": records}
     targets = [root / ".onebookwiki" / "artifacts" / "evidence.json", root / "wiki" / "evidence.json"]
     for target in targets:
@@ -131,8 +164,12 @@ def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation]) -> 
 
 
 def slugify(value: str) -> str:
+    """Return stable readable ASCII slugs without collapsing non-Latin titles."""
     normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return normalized or "item"
+    if normalized:
+        return normalized
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+    return f"unit-{digest}"
 
 
 def _claims(
@@ -205,11 +242,25 @@ def render_chapter(
         for ref in chapter.evidence
     ) or "- （暂无可验证证据。）"
     raw_line = _raw_metadata("../../", raw_path)
-    content = f"""# Chapter {chapter.chapter}: {chapter.title}
+    pages = ""
+    if chapter.physical_page_start is not None:
+        end = chapter.physical_page_end or chapter.physical_page_start
+        pages = f"\n> Pages: {chapter.physical_page_start}-{end}"
+    epub_location = ""
+    if chapter.href or chapter.spine or chapter.spine_index is not None:
+        href = f"{chapter.href}{f'#{chapter.fragment}' if chapter.fragment else ''}" if chapter.href else ""
+        spine = f"Spine {chapter.spine_index}" if chapter.spine_index is not None else chapter.spine
+        epub_location = f"\n> EPUB Location: {' · '.join(item for item in (spine, href) if item)}"
+    breadcrumb = " › ".join(chapter.breadcrumb)
+    part = f"\n> Part: {chapter.part}/{chapter.part_count}" if chapter.part_count > 1 else ""
+    content = f"""# {_chapter_label(chapter)}
 
-> Sources: {raw_path or chapter.title}
+> Sources: {raw_path or _chapter_label(chapter)}
 {raw_line}> Book: [Book](../book.md)
 > Chapter: {chapter.chapter}
+> Source Unit: {chapter.source_unit_id}
+> Breadcrumb: {breadcrumb}
+> Type: {chapter.source_type or 'reading_unit'}{pages}{epub_location}{part}
 > Updated: {date.today().isoformat()}
 
 ## Chapter Purpose
@@ -284,7 +335,7 @@ def _entity_page(
     for number in chapter_numbers:
         chapter = next((item for item in chapters if item.chapter == number), None)
         if chapter:
-            chapter_links.append(f"- [Chapter {number}](../chapters/{number:02d}-{slugify(chapter.title)}.md)")
+            chapter_links.append(f"- {_chapter_link(chapter, '../')}")
     section_title = {"themes": "Theme", "concepts": "Concept", "arguments": "Claim"}.get(kind, "Entry")
     target.write_text(
         f"""# {_replace_inline_citation_labels(claim.text or slug, evidence_by_id)}
@@ -345,7 +396,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
             generated.append(_entity_page(root, book, claim, kind, slug, chapters))
 
     rows = "\n".join(
-        f"| {item.chapter} | [Chapter {item.chapter}](chapters/{item.chapter:02d}-{slugify(item.title)}.md) | "
+        f"| {' › '.join(item.breadcrumb) or item.source_type or '阅读单元'} | {_chapter_link(item)} | "
         f"{_replace_inline_citations(item.executive_summary or '暂无摘要', evidence_by_id)} | generated | {date.today().isoformat()} |"
         for item in chapters
     )
@@ -365,9 +416,9 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
 
 ## Reading Map
 
-| # | Chapter | Summary | Status | Updated |
+| Original structure | Reading unit | Summary | Status | Updated |
 |---|---|---|---|---|
-{rows or '| - | - | 暂无章节 | - | - |'}
+{rows or '| - | - | 暂无阅读单元 | - | - |'}
 
 ## Book-Level Thesis
 
@@ -447,7 +498,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
     questions = [(chapter, question) for chapter in chapters for question in chapter.review_questions]
     questions_text = "\n".join(
         f"- {_replace_inline_citations(question, evidence_by_id)} "
-        f"([Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md))"
+        f"({_chapter_link(chapter, '../')})"
         for chapter, question in questions
     )
     (review / "questions.md").write_text(
@@ -458,7 +509,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
     flashcards = "\n".join(
         f"| {_replace_inline_citations(question, evidence_by_id)} | "
         f"{_replace_inline_citations(chapter.executive_summary or '参见章节解读。', evidence_by_id)} | "
-        f"[Chapter {chapter.chapter}](../chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md) |"
+        f"{_chapter_link(chapter, '../')} |"
         for chapter, question in questions
     )
     (review / "flashcards.md").write_text(
@@ -468,6 +519,27 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
     generated.append(review / "flashcards.md")
 
     chapter_ids = [f"chapter-{item.chapter:02d}" for item in chapters]
+    source = _source_metadata(root)
+    source_structure = dict(source.get("source_structure") or {})
+    source_outline = list(source_structure.get("outline") or [])
+    rendered_page_ids = set(chapter_ids)
+
+    def resolve_outline(nodes: list[object]) -> list[dict]:
+        """Keep the source tree, but only publish reading pages that were rendered."""
+        resolved: list[dict] = []
+        for raw_node in nodes:
+            if not isinstance(raw_node, dict):
+                continue
+            node = dict(raw_node)
+            node["pageIds"] = [
+                page_id for page_id in node.get("pageIds", [])
+                if isinstance(page_id, str) and page_id in rendered_page_ids
+            ]
+            node["children"] = resolve_outline(list(node.get("children") or []))
+            resolved.append(node)
+        return resolved
+
+    source_outline = resolve_outline(source_outline)
     entity_pages = []
     pages = [
         {"id": "book", "title": book.title, "path": "book.md", "kind": "book", "relatedPages": ["index", *chapter_ids]},
@@ -480,7 +552,28 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
             for _, claim, slug in records:
                 if any(item in claim.evidence_ids for item in {ref.evidence_id for ref in chapter.evidence}):
                     entity_ids.append(f"{kind[:-1]}-{slug}")
-        pages.append({"id": page_id, "title": chapter.title, "path": f"chapters/{chapter.chapter:02d}-{slugify(chapter.title)}.md", "kind": "chapter", "chapter": chapter.chapter, "rawSources": sorted({ref.source_path for ref in chapter.evidence}), "relatedPages": ["book", "index", *entity_ids]})
+        pages.append({
+            "id": page_id,
+            "title": _chapter_label(chapter),
+            "path": f"chapters/{chapter.chapter:02d}-{slugify(_chapter_label(chapter))}.md",
+            "kind": "reading_unit",
+            "chapter": chapter.chapter,
+            "bookTitle": book.title,
+            "sourceUnitId": chapter.source_unit_id,
+            "sourceTitle": chapter.source_title or _chapter_label(chapter),
+            "sourceKind": chapter.source_type,
+            "breadcrumb": chapter.breadcrumb,
+            "physicalPageStart": chapter.physical_page_start,
+            "physicalPageEnd": chapter.physical_page_end,
+            "spine": chapter.spine or None,
+            "spineIndex": chapter.spine_index,
+            "href": chapter.href or None,
+            "fragment": chapter.fragment or None,
+            "part": chapter.part,
+            "partCount": chapter.part_count,
+            "rawSources": sorted({ref.source_path for ref in chapter.evidence}),
+            "relatedPages": ["book", "index", *entity_ids],
+        })
     for kind, records in entity_records.items():
         singular = kind[:-1]
         for _, claim, slug in records:
@@ -492,8 +585,6 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
         {"id": "review-flashcards", "title": "Flashcards", "path": "review/flashcards.md", "kind": "review", "relatedPages": ["book", "index"]},
     ])
     sections = [{"id": "overview", "title": "Overview", "pages": ["book", "index"]}]
-    if chapter_ids:
-        sections.append({"id": "chapters", "title": "Chapters", "pages": chapter_ids})
     for kind, records in entity_records.items():
         if records:
             sections.append({"id": kind, "title": kind.title(), "pages": [f"{kind[:-1]}-{slug}" for _, _, slug in records]})
@@ -502,13 +593,14 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
         "id": "book-wiki",
         "title": book.title,
         "description": _replace_inline_citation_labels(book.overview, evidence_by_id),
+        "sourceOutline": source_outline,
         "pages": pages,
         "sections": sections,
     }
     structure_path = wiki / "structure.json"
     structure_path.write_text(json.dumps(structure, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     generated.append(structure_path)
-    generated.append(_write_evidence_index(root, chapters))
+    generated.append(_write_evidence_index(root, chapters, book.title))
     log = wiki / "log.md"
     log.write_text(
         f"# Wiki Log\n\n## [{date.today().isoformat()}] build | {book.title}\n"
