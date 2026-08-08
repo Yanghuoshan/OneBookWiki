@@ -21,11 +21,41 @@ DEFAULT_MAX_UNIT_TOKENS = 12000
 
 
 @dataclass(frozen=True)
+class PdfSpan:
+    """A native PDF text span with the geometry needed for deterministic cleanup."""
+
+    text: str
+    x0: float = 0.0
+    y0: float = 0.0
+    x1: float = 0.0
+    y1: float = 0.0
+    size: float = 0.0
+    flags: int = 0
+    font: str = ""
+
+
+@dataclass(frozen=True)
+class PdfLine:
+    """A native PDF text line. ``text`` is always derived from ``spans`` when present."""
+
+    text: str
+    x0: float = 0.0
+    y0: float = 0.0
+    x1: float = 0.0
+    y1: float = 0.0
+    size: float = 0.0
+    spans: tuple[PdfSpan, ...] = ()
+
+
+@dataclass(frozen=True)
 class PageBlock:
     text: str
     y0: float = 0.0
     y1: float = 0.0
     size: float = 0.0
+    x0: float = 0.0
+    x1: float = 0.0
+    lines: tuple[PdfLine, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -34,6 +64,8 @@ class PdfPage:
     text: str
     blocks: tuple[PageBlock, ...] = ()
     height: float = 0.0
+    width: float = 0.0
+    lines: tuple[PdfLine, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -721,6 +753,29 @@ def _bookmark_leaf_indexes(bookmarks: list[dict[str, Any]]) -> list[int]:
     return leaves
 
 
+def _bookmark_coverage(units: list[SourceUnit], page_count: int) -> dict[str, Any]:
+    """Report whether leaf-derived bookmark units cover every physical PDF page.
+
+    A parent bookmark can occupy a long page range while its only child points to
+    an appendix near the end of a book.  Since only leaves become reading units,
+    accepting that tree would silently omit the parent's intervening body pages.
+    """
+    expected = 1
+    gaps: list[dict[str, int]] = []
+    for unit in sorted(units, key=lambda item: (item.physical_page_start, item.physical_page_end)):
+        if unit.physical_page_start > expected:
+            gaps.append({"physical_page_start": expected, "physical_page_end": unit.physical_page_start - 1})
+        expected = max(expected, unit.physical_page_end + 1)
+    if expected <= page_count:
+        gaps.append({"physical_page_start": expected, "physical_page_end": page_count})
+    return {
+        "complete": not gaps and bool(units),
+        "gaps": gaps,
+        "covered_units": len(units),
+        "page_count": page_count,
+    }
+
+
 def _units_from_bookmarks(bookmarks: list[dict[str, Any]], page_count: int) -> list[SourceUnit]:
     valid = _valid_bookmarks(bookmarks, page_count)
     leaf_indexes = _bookmark_leaf_indexes(valid)
@@ -867,22 +922,27 @@ def analyse_pdf(
     selected_method = "ranges"
     selected_confidence = 0.0
     bookmark_outline: list[SourceNode] | None = None
+    bookmark_rejected_for_coverage = False
 
     if mode in {"auto", "bookmarks"} and bookmarks:
         valid_bookmarks = _valid_bookmarks(bookmarks, len(pages))
         bookmarked = _units_from_bookmarks(valid_bookmarks, len(pages))
+        coverage = _bookmark_coverage(bookmarked, len(pages))
         confidence = sum(unit.confidence for unit in bookmarked) / len(bookmarked) if bookmarked else 0.0
-        accepted = bool(bookmarked and confidence >= max(min_confidence, 0.85))
+        accepted = bool(bookmarked and coverage["complete"] and confidence >= max(min_confidence, 0.85))
         report["methods"].append({
             "method": "bookmarks",
             "bookmarks": len(valid_bookmarks),
             "units": len(bookmarked),
             "confidence": confidence,
+            "coverage": coverage,
             "accepted": accepted,
+            "rejection": None if accepted else "incomplete_physical_page_coverage" if bookmarked and not coverage["complete"] else "insufficient_confidence",
         })
         if accepted:
             selected, selected_method, selected_confidence = bookmarked, "bookmarks", confidence
             bookmark_outline = _outline_from_bookmarks(valid_bookmarks, bookmarked, len(pages))
+        bookmark_rejected_for_coverage = bool(bookmarked and not coverage["complete"])
 
     toc_pages = _toc_pages(pages)
     entries = parse_printed_toc(toc_pages) if mode in {"auto", "toc"} else []
@@ -894,7 +954,10 @@ def analyse_pdf(
         "running_headers": {signature: list(page_numbers) for signature, page_numbers in detected.running_headers.items()},
     }
 
-    if not selected and mode in {"auto", "toc"}:
+    # An incomplete bookmark tree must fall through to automatic sources even when
+    # the caller requested bookmarks explicitly; returning it would omit pages.
+    allow_toc = mode in {"auto", "toc"} or bookmark_rejected_for_coverage
+    if not selected and allow_toc:
         offset, offset_report = _predicted_offset(pages)
         candidates = [
             _toc_candidates(entry, pages, detected, offset, {page.number for page in toc_pages})
@@ -924,7 +987,8 @@ def analyse_pdf(
         if accepted:
             selected, selected_method, selected_confidence = _units_from_mapped_toc(entries, matches, len(pages)), "toc", confidence
 
-    if not selected and mode in {"auto", "headings"}:
+    allow_headings = mode in {"auto", "headings"} or bookmark_rejected_for_coverage
+    if not selected and allow_headings:
         heading_units = _units_from_headings(pages, detected)
         confidence = sum(unit.confidence for unit in heading_units) / len(heading_units) if heading_units else 0.0
         accepted = len(heading_units) >= 2 and confidence >= max(min_confidence, 0.75)
@@ -998,8 +1062,8 @@ def split_unit_into_parts(unit: SourceUnit, pages: list[PdfPage], max_unit_token
     fragments: list[tuple[int, str]] = []
     for page in relevant:
         # A recognized subheading is the safest natural split point within an
-        # overlong original unit. Keep using page.text for the actual payload so
-        # layout analysis cannot replace or omit native extracted characters.
+        # overlong unit. ``blocks`` and ``text`` always come from the same page
+        # view, whether native structure text or the selected processed payload.
         blocks = page.blocks or tuple(PageBlock(line) for line in _page_lines(page))
         heading_keys = {
             normalise(block.text)

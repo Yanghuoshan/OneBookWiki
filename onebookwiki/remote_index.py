@@ -40,7 +40,15 @@ class CloudVectorIndex:
         self.vector_path.parent.mkdir(parents=True, exist_ok=True)
         self.vector_path.write_text(json.dumps(vectors, ensure_ascii=False), encoding="utf-8")
 
-    def update_chapter(self, path: Path, chapter: int, chunks: list[Chunk]) -> tuple[int, int]:
+    def update_chapter(
+        self,
+        path: Path,
+        chapter: int,
+        chunks: list[Chunk],
+        *,
+        chunking: dict | None = None,
+        index_identity: dict | None = None,
+    ) -> tuple[int, int]:
         relative = path if not path.is_absolute() else path.relative_to(self.root)
         source_key = relative.as_posix()
         old = self.manifest.chapters.get(source_key, {})
@@ -55,10 +63,21 @@ class CloudVectorIndex:
             item["embedding_dimension"] = len(vector)
             serialized.append(item)
             vectors[chunk.chunk_id] = vector
-        self.manifest.update_chapter(relative, chapter, serialized, self.manifest.chapter_hash(self.root / relative))
         identity = self.embedder.identity()
-        self.manifest.embedding_backend = str(identity.get("provider", getattr(self.embedder, "provider", "vector")))
-        self.manifest.embedding_model = str(identity.get("model", "configured"))
+        resolved_identity = index_identity or {
+            "backend": str(identity.get("provider", getattr(self.embedder, "provider", "vector"))),
+            "model": str(identity.get("model", "configured")),
+        }
+        self.manifest.update_chapter(
+            relative,
+            chapter,
+            serialized,
+            self.manifest.chapter_hash(self.root / relative),
+            chunking=chunking,
+            index_identity=resolved_identity,
+        )
+        self.manifest.embedding_backend = str(resolved_identity["backend"])
+        self.manifest.embedding_model = str(resolved_identity["model"])
         self._save_vectors(vectors)
         self.manifest.save(self.root)
         return len(old_ids), len(chunks)

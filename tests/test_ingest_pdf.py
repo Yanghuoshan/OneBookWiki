@@ -1,6 +1,8 @@
+import tempfile
 import unittest
 from pathlib import Path
 import importlib.util
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ingest_pdf.py"
 spec = importlib.util.spec_from_file_location("ingest_pdf", SCRIPT)
@@ -15,6 +17,15 @@ class PdfSlugTest(unittest.TestCase):
 
     def test_non_latin_title_has_deterministic_fallback(self):
         self.assertEqual(module.slugify("否认"), "book")
+
+    def test_postprocess_option_is_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixture.pdf"
+            root = Path(tmp) / "fixture-project"
+            source.write_bytes(b"fixture")
+            with patch.object(module, "import_pdf", return_value=[]) as imported:
+                self.assertEqual(module.main(["ingest_pdf.py", str(source), str(root), "--pdf-postprocess", "strict"]), 0)
+        self.assertEqual(imported.call_args.kwargs["postprocess"], "strict")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ from onebookwiki.chunking import chunk_text
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters
 from onebookwiki.importers import import_pdf
 from onebookwiki.index import LocalIndex
-from onebookwiki.source_structure import PageBlock, PdfPage, SourceUnit, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
+from onebookwiki.pdf_postprocess import postprocess_pdf_pages
+from onebookwiki.source_structure import PageBlock, PdfLine, PdfPage, PdfSpan, SourceUnit, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
 
 
 class PdfStructureTest(unittest.TestCase):
@@ -46,6 +47,21 @@ class PdfStructureTest(unittest.TestCase):
         self.assertEqual([node.title for node in result.outline[1].children], ["第一章", "第二章"])
         self.assertEqual(result.outline[1].children[0].unit_ids, ["unit-02"])
         self.assertEqual(result.outline[2].children[0].breadcrumb, ("第二部", "第三章"))
+
+    def test_incomplete_bookmarks_fall_back_to_automatic_structure(self):
+        pages = [PdfPage(number, "") for number in range(1, 11)]
+        bookmarks = [
+            {"level": 1, "title": "前言", "page": 1},
+            {"level": 1, "title": "译序", "page": 3},
+            {"level": 2, "title": "附录", "page": 9},
+        ]
+        result = analyse_pdf(pages, Path("incomplete-bookmarks.pdf"), bookmarks=bookmarks, mode="bookmarks", pages_per_chapter=10)
+        self.assertEqual(result.method, "ranges")
+        self.assertEqual([(unit.physical_page_start, unit.physical_page_end) for unit in result.units], [(1, 10)])
+        bookmark_report = result.report["methods"][0]
+        self.assertFalse(bookmark_report["accepted"])
+        self.assertEqual(bookmark_report["rejection"], "incomplete_physical_page_coverage")
+        self.assertEqual(bookmark_report["coverage"]["gaps"], [{"physical_page_start": 3, "physical_page_end": 8}])
 
     def test_toc_maps_native_headings_to_reading_units(self):
         pages = [
@@ -173,10 +189,33 @@ class PdfStructureTest(unittest.TestCase):
             self.assertEqual(source_metadata["title"], "示例书")
             self.assertTrue(source_metadata["source_structure"]["units"])
             self.assertTrue((root / ".onebookwiki" / "structure-report.json").is_file())
+            report = json.loads((root / ".onebookwiki" / "structure-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["ocr"], "disabled")
+            self.assertEqual(report["postprocess"]["reason"], "layout-unavailable")
+            self.assertEqual(source_metadata["source_processing"]["structure_view"], "native")
             raw = imported[0].read_text(encoding="utf-8")
             self.assertTrue(raw.startswith("# "))
             self.assertNotIn("# Chapter", raw)
             self.assertIn("> Source Unit:", raw)
+
+    def test_processed_payload_keeps_native_outline_and_uses_synced_blocks(self):
+        def layout_line(text, y0, size=10):
+            return PdfLine(text, 20, y0, 260, y0 + size, size=size, spans=(PdfSpan(text, 20, y0, 260, y0 + size, size=size),))
+
+        first = (layout_line("第一章 开始", 20, 20), layout_line("这 是 清 理 后 的 正 文。", 70))
+        second = (layout_line("第二章 继续", 20, 20), layout_line("第 二 页 正 文。", 70))
+        native = [
+            PdfPage(1, "第一章 开始\n这 是 清 理 后 的 正 文。", (PageBlock("第一章 开始", y0=20, size=20),), height=1000, width=300, lines=first),
+            PdfPage(2, "第二章 继续\n第 二 页 正 文。", (PageBlock("第二章 继续", y0=20, size=20),), height=1000, width=300, lines=second),
+        ]
+        outline = analyse_pdf(native, Path("sample.pdf"), mode="headings", min_confidence=0.1)
+        processed = postprocess_pdf_pages(native).pages
+        self.assertEqual([unit.title for unit in outline.units], ["第一章 开始", "第二章 继续"])
+        self.assertEqual([unit.physical_page_start for unit in outline.units], [1, 2])
+        self.assertIn("这是清理后的正文。", processed[0].text)
+        self.assertTrue(processed[0].blocks)
+        parts = split_unit_into_parts(outline.units[0], list(processed), max_unit_tokens=256)
+        self.assertIn("这是清理后的正文。", "\n".join(fragment for part in parts for _, fragment in part.page_fragments))
 
     def test_force_reimport_removes_stale_raw_units(self):
         with tempfile.TemporaryDirectory() as tmp:

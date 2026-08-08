@@ -10,6 +10,9 @@ from .markdown import sha256_text
 CJK_RE = re.compile(r"[⺀-⿿　-〿㐀-䶿一-鿿豈-﫿]")
 SENTENCE_RE = re.compile(r"(?<=[。！？；!?;])\s*|\n+")
 SOFT_BREAK_RE = re.compile(r"(?<=[，、：,:])\s*|\s+")
+CHUNK_PROFILE_REVISION = "smaller-v1"
+_CJK_DEFAULTS = (400, 60, 520)
+_LATIN_DEFAULTS = (500, 75, 650)
 
 
 @dataclass(frozen=True)
@@ -129,14 +132,14 @@ def _section_blocks(text: str) -> list[tuple[int, int, str, str]]:
     return blocks
 
 
-def _units(text: str, cjk: bool) -> list[str]:
+def _units(text: str, cjk: bool, max_tokens: int) -> list[str]:
     pattern = SENTENCE_RE if cjk else re.compile(r"\n+")
     units = [part.strip() for part in pattern.split(text) if part.strip()]
     if not cjk:
         return units
     refined: list[str] = []
     for unit in units:
-        if count_tokens(unit) <= 800:
+        if count_tokens(unit) <= max_tokens:
             refined.append(unit)
             continue
         refined.extend(part.strip() for part in SOFT_BREAK_RE.split(unit) if part.strip())
@@ -144,7 +147,7 @@ def _units(text: str, cjk: bool) -> list[str]:
 
 
 def _split_block(start: int, end: int, section: str, text: str, cjk: bool, max_tokens: int) -> list[tuple[int, int, str, str]]:
-    units = _units(text, cjk)
+    units = _units(text, cjk, max_tokens)
     if not units:
         return []
     result: list[tuple[int, int, str, str]] = []
@@ -201,7 +204,7 @@ def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_t
         if index:
             previous = chunks[index - 1]
             tail = previous.text
-            pieces = _units(tail, contains_cjk(tail))
+            pieces = _units(tail, contains_cjk(tail), max_tokens)
             overlap: list[str] = []
             total = 0
             for piece in reversed(pieces):
@@ -233,12 +236,38 @@ def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_t
     return result
 
 
+def chunking_profile(
+    text: str,
+    target_words: int | None = None,
+    overlap_words: int | None = None,
+    *,
+    target_tokens: int | None = None,
+    overlap_tokens: int | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, int | str]:
+    """Return the normalized chunking budget applied to a document."""
+    cjk = contains_cjk(text)
+    default_target, default_overlap, default_maximum = _CJK_DEFAULTS if cjk else _LATIN_DEFAULTS
+    target = target_tokens if target_tokens is not None else (default_target if cjk or target_words is None else target_words)
+    overlap = overlap_tokens if overlap_tokens is not None else (default_overlap if cjk or overlap_words is None else overlap_words)
+    maximum = max_tokens if max_tokens is not None else max(default_maximum, target + overlap)
+    target = max(1, min(target, maximum))
+    overlap = max(0, min(overlap, target // 2))
+    return {
+        "revision": CHUNK_PROFILE_REVISION,
+        "language": "cjk" if cjk else "latin",
+        "target_tokens": target,
+        "overlap_tokens": overlap,
+        "max_tokens": maximum,
+    }
+
+
 def chunk_text(
     text: str,
     source_path: str,
     chapter: int,
-    target_words: int = 700,
-    overlap_words: int = 100,
+    target_words: int | None = None,
+    overlap_words: int | None = None,
     *,
     target_tokens: int | None = None,
     overlap_tokens: int | None = None,
@@ -246,16 +275,21 @@ def chunk_text(
 ) -> list[Chunk]:
     """Split prose by language-aware boundaries with a hard token ceiling.
 
-    ``target_words`` and ``overlap_words`` remain for compatibility. Explicit
-    token arguments take precedence; CJK defaults are 600/80/800 and Latin
-    defaults are 700/100/900.
+    Explicit token arguments take precedence. The defaults are 400/60/520 for
+    CJK documents and 500/75/650 for Latin documents.
     """
-    cjk = contains_cjk(text)
-    target = target_tokens if target_tokens is not None else (600 if cjk else target_words)
-    overlap = overlap_tokens if overlap_tokens is not None else (80 if cjk else overlap_words)
-    maximum = max_tokens if max_tokens is not None else (800 if cjk else max(900, target + overlap))
-    target = max(1, min(target, maximum))
-    overlap = max(0, min(overlap, target // 2))
+    profile = chunking_profile(
+        text,
+        target_words,
+        overlap_words,
+        target_tokens=target_tokens,
+        overlap_tokens=overlap_tokens,
+        max_tokens=max_tokens,
+    )
+    cjk = profile["language"] == "cjk"
+    target = int(profile["target_tokens"])
+    overlap = int(profile["overlap_tokens"])
+    maximum = int(profile["max_tokens"])
 
     units: list[tuple[int, int, str, str]] = []
     for start, end, section, body in _section_blocks(text):

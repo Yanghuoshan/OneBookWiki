@@ -17,13 +17,16 @@ from xml.etree import ElementTree
 from .source_structure import (
     DEFAULT_MAX_UNIT_TOKENS,
     PageBlock,
+    PdfLine,
     PdfPage,
+    PdfSpan,
     _kind,
     analyse_pdf,
     reading_part_dict,
     source_node_dict,
     split_unit_into_parts,
 )
+from .pdf_postprocess import postprocess_pdf_pages
 
 
 def sha256_file(path: Path) -> str:
@@ -269,7 +272,7 @@ def extract_pdf_pages(source: Path) -> list[str]:
 
 
 def extract_pdf_layout(source: Path) -> tuple[list[PdfPage], list[dict[str, Any]]]:
-    """Extract native text, sorted text blocks, and bookmark targets without OCR."""
+    """Extract the established native view and a coordinate tree without OCR."""
     try:
         import fitz
     except ImportError as exc:
@@ -278,23 +281,53 @@ def extract_pdf_layout(source: Path) -> tuple[list[PdfPage], list[dict[str, Any]
     pages: list[PdfPage] = []
     for number, page in enumerate(document, 1):
         blocks: list[PageBlock] = []
-        for block in page.get_text("dict", sort=True).get("blocks", []):
+        page_lines: list[PdfLine] = []
+        layout = page.get_text("dict", sort=True)
+        for block in layout.get("blocks", []):
             if block.get("type") != 0:
                 continue
-            spans = [span for line in block.get("lines", []) for span in line.get("spans", [])]
-            text = " ".join(str(span.get("text", "")).strip() for span in spans if str(span.get("text", "")).strip())
-            if text:
-                blocks.append(PageBlock(
+            block_lines: list[PdfLine] = []
+            for raw_line in block.get("lines", []):
+                raw_spans = raw_line.get("spans", [])
+                spans = tuple(PdfSpan(
+                    text=str(span.get("text", "")),
+                    x0=float(span.get("bbox", (0, 0, 0, 0))[0]),
+                    y0=float(span.get("bbox", (0, 0, 0, 0))[1]),
+                    x1=float(span.get("bbox", (0, 0, 0, 0))[2]),
+                    y1=float(span.get("bbox", (0, 0, 0, 0))[3]),
+                    size=float(span.get("size", 0.0)),
+                    flags=int(span.get("flags", 0)),
+                    font=str(span.get("font", "")),
+                ) for span in raw_spans if str(span.get("text", "")).strip())
+                text = " ".join(span.text.strip() for span in spans if span.text.strip())
+                if not text:
+                    continue
+                bbox = raw_line.get("bbox", (0, 0, 0, 0))
+                line = PdfLine(
                     text=text,
-                    y0=float(block.get("bbox", (0, 0, 0, 0))[1]),
-                    y1=float(block.get("bbox", (0, 0, 0, 0))[3]),
-                    size=max((float(span.get("size", 0)) for span in spans), default=0.0),
-                ))
+                    x0=float(bbox[0]), y0=float(bbox[1]), x1=float(bbox[2]), y1=float(bbox[3]),
+                    size=max((span.size for span in spans), default=0.0), spans=spans,
+                )
+                block_lines.append(line)
+                page_lines.append(line)
+            if not block_lines:
+                continue
+            bbox = block.get("bbox", (0, 0, 0, 0))
+            blocks.append(PageBlock(
+                text="\n".join(line.text for line in block_lines),
+                x0=float(bbox[0]), y0=float(bbox[1]), x1=float(bbox[2]), y1=float(bbox[3]),
+                size=max((line.size for line in block_lines), default=0.0),
+                lines=tuple(block_lines),
+            ))
         pages.append(PdfPage(
             number=number,
+            # Preserve the pre-existing native text view for analyse_pdf().  The
+            # coordinate tree below is exclusively for the processed payload.
             text=page.get_text("text", sort=True),
             blocks=tuple(blocks),
             height=float(page.rect.height),
+            width=float(page.rect.width),
+            lines=tuple(page_lines),
         ))
     bookmarks: list[dict[str, Any]] = []
     for entry in document.get_toc(simple=True) or []:
@@ -336,17 +369,24 @@ def import_pdf(
     structure_min_confidence: float = 0.72,
     structure_report: Path | None = None,
     max_unit_tokens: int = DEFAULT_MAX_UNIT_TOKENS,
+    postprocess: str = "auto",
 ) -> list[Path]:
-    """Import a PDF as bounded, source-structured reading units without OCR."""
+    """Import a PDF as bounded source units without OCR or semantic cleanup.
+
+    Structure analysis intentionally uses the native page view.  The selected
+    processed page view is used only after physical page ranges are fixed.
+    """
     if structure not in {"auto", "bookmarks", "toc", "headings", "ranges"}:
         raise ValueError(f"unsupported PDF structure mode: {structure}")
+    if postprocess not in {"off", "auto", "strict"}:
+        raise ValueError(f"unsupported PDF postprocess mode: {postprocess}")
     if pages is None:
-        pdf_pages, bookmarks = extract_pdf_layout(source)
+        native_pages, bookmarks = extract_pdf_layout(source)
     else:
-        pdf_pages = [PdfPage(number=index, text=text) for index, text in enumerate(pages, 1)]
+        native_pages = [PdfPage(number=index, text=text) for index, text in enumerate(pages, 1)]
         bookmarks = []
     analysis = analyse_pdf(
-        pdf_pages,
+        native_pages,
         source,
         explicit_title=title,
         bookmarks=bookmarks,
@@ -355,6 +395,9 @@ def import_pdf(
         pages_per_chapter=pages_per_chapter,
         chapter_count=chapter_count,
     )
+    processed = postprocess_pdf_pages(native_pages, mode=postprocess)
+    processed_pages = list(processed.pages)
+    analysis.report["postprocess"] = processed.report
     book_title = analysis.title.value
     if force:
         _clear_raw_chapters(root)
@@ -368,7 +411,7 @@ def import_pdf(
     reading_units: list[dict[str, Any]] = []
     chapter = 1
     for unit in analysis.units:
-        for part in split_unit_into_parts(unit, pdf_pages, max_unit_tokens):
+        for part in split_unit_into_parts(unit, processed_pages, max_unit_tokens):
             fallback = f"unit-{chapter:02d}"
             filename = f"{chapter:02d}-{slugify(part.title, fallback)}.md"
             target = output / filename
@@ -414,10 +457,16 @@ def import_pdf(
         "format": "PDF",
         "source_name": source.name,
         "source_hash": sha256_file(source),
-        "page_count": len(pdf_pages),
+        "page_count": len(native_pages),
         "pages_per_chapter": pages_per_chapter,
         "chapter_count": chapter_count,
         "locator_policy": "pdf-physical-page-1-based",
+        "source_processing": {
+            "format": "PDF",
+            "structure_view": "native",
+            "payload_view": processed.report["payload_view"],
+            "steps": [processed.report],
+        },
         "source_structure": {
             "method": analysis.method,
             "confidence": analysis.confidence,
@@ -539,6 +588,10 @@ def import_epub(source: Path, root: Path, title: str | None = None, force: bool 
         "source_name": source.name,
         "source_hash": parsed["source_hash"],
         "locator_policy": "chapter-spine-href",
+        "source_processing": {
+            "format": "EPUB",
+            "steps": [],
+        },
         "source_structure": {
             "method": "epub_spine_toc",
             "confidence": 0.98,

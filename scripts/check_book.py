@@ -356,6 +356,27 @@ def structure_health(root: Path) -> list[str]:
                     problems.append("structure report must declare OCR disabled")
                 elif not isinstance(report.get("selected_method"), str):
                     problems.append("structure report has no selected_method")
+                else:
+                    postprocess = report.get("postprocess")
+                    if postprocess is not None:
+                        if not isinstance(postprocess, dict):
+                            problems.append("structure report postprocess must be an object")
+                        else:
+                            mode = postprocess.get("mode")
+                            if mode not in {"off", "auto", "strict"}:
+                                problems.append("structure report postprocess has invalid mode")
+                            if postprocess.get("engine") != "pymupdf-existing-text":
+                                problems.append("structure report postprocess must use existing PDF text")
+                            if postprocess.get("semantic_model") != "none":
+                                problems.append("structure report postprocess must declare no semantic model")
+                            processed_pages = postprocess.get("pages_processed", 0)
+                            changed_pages = postprocess.get("pages_changed", 0)
+                            if not isinstance(processed_pages, int) or processed_pages < 0:
+                                problems.append("structure report postprocess has invalid pages_processed")
+                            if not isinstance(changed_pages, int) or changed_pages < 0:
+                                problems.append("structure report postprocess has invalid pages_changed")
+                            if isinstance(processed_pages, int) and isinstance(changed_pages, int) and changed_pages > processed_pages:
+                                problems.append("structure report postprocess pages_changed exceeds pages_processed")
             except (OSError, ValueError) as error:
                 problems.append(f"structure report is invalid JSON: {error}")
     return sorted(set(problems))

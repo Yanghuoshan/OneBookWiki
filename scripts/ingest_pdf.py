@@ -27,6 +27,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--structure-min-confidence", type=float, default=0.72)
     parser.add_argument("--structure-report")
     parser.add_argument("--max-unit-tokens", type=int, default=12000)
+    parser.add_argument("--pdf-postprocess", choices=("off", "auto", "strict"), default="auto")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv[1:])
     source = Path(args.pdf).resolve()
@@ -47,6 +48,7 @@ def main(argv: list[str]) -> int:
             structure_min_confidence=args.structure_min_confidence,
             structure_report=report,
             max_unit_tokens=args.max_unit_tokens,
+            postprocess=args.pdf_postprocess,
         )
     except (OSError, ValueError) as error:
         print(f"PDF import failed: {error}", file=sys.stderr)

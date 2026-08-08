@@ -1,6 +1,6 @@
 import unittest
 
-from onebookwiki.chunking import chunk_text
+from onebookwiki.chunking import chunk_text, chunking_profile
 
 
 class ChunkingTest(unittest.TestCase):
@@ -14,6 +14,40 @@ class ChunkingTest(unittest.TestCase):
         self.assertGreaterEqual(chunks[-1].end_line, chunks[-1].start_line)
         self.assertIn("Alpha evidence", "\n".join(chunk.text for chunk in chunks))
         self.assertIn("Beta evidence", "\n".join(chunk.text for chunk in chunks))
+
+    def test_default_profiles_use_smaller_budgets_for_both_languages(self):
+        self.assertEqual(
+            chunking_profile("中文内容。"),
+            {
+                "revision": "smaller-v1",
+                "language": "cjk",
+                "target_tokens": 400,
+                "overlap_tokens": 60,
+                "max_tokens": 520,
+            },
+        )
+        self.assertEqual(
+            chunking_profile("English content."),
+            {
+                "revision": "smaller-v1",
+                "language": "latin",
+                "target_tokens": 500,
+                "overlap_tokens": 75,
+                "max_tokens": 650,
+            },
+        )
+
+    def test_explicit_token_budget_overrides_default_profile(self):
+        self.assertEqual(
+            chunking_profile("English content.", target_tokens=120, overlap_tokens=30, max_tokens=160),
+            {
+                "revision": "smaller-v1",
+                "language": "latin",
+                "target_tokens": 120,
+                "overlap_tokens": 30,
+                "max_tokens": 160,
+            },
+        )
 
     def test_chinese_uses_token_budget_without_spaces(self):
         sentences = "。".join(f"这是第{i}个句子，包含关于证据和阅读的内容" for i in range(80)) + "。"

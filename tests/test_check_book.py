@@ -54,6 +54,24 @@ class BookCheckerTest(unittest.TestCase):
             checked = run(CHECKER, root)
             self.assertIn("stale chapter hash: raw/chapters/01-attention.md", checked.stdout)
 
+    def test_pdf_postprocess_report_contract_is_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.copy_example(root)
+            metadata = root / ".onebookwiki" / "source.json"
+            metadata.parent.mkdir(parents=True, exist_ok=True)
+            metadata.write_text('{"format": "PDF"}', encoding="utf-8")
+            (root / "wiki" / "structure.json").write_text('{"pages": [], "sections": [], "sourceOutline": []}', encoding="utf-8")
+            report = metadata.parent / "structure-report.json"
+            report.write_text('{"selected_method": "ranges", "ocr": "disabled", "postprocess": {"version": "layout-v1", "mode": "auto", "engine": "pymupdf-existing-text", "semantic_model": "none", "pages_processed": 3, "pages_changed": 2}}', encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertNotIn("postprocess", checked.stdout)
+            report.write_text('{"selected_method": "ranges", "ocr": "disabled", "postprocess": {"mode": "auto", "engine": "model", "semantic_model": "enabled", "pages_processed": 1, "pages_changed": 2}}', encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertIn("structure report postprocess must use existing PDF text", checked.stdout)
+            self.assertIn("structure report postprocess must declare no semantic model", checked.stdout)
+            self.assertIn("structure report postprocess pages_changed exceeds pages_processed", checked.stdout)
+
     def test_pdf_structure_report_requires_explicit_ocr_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

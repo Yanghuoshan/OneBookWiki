@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from onebookwiki.chunking import chunk_text
+from onebookwiki.chunking import chunk_text, chunking_profile
 from onebookwiki.index import LocalIndex
 from onebookwiki.markdown import metadata, parse_document
 from onebookwiki.providers import ProviderUnavailable, build_embedder
@@ -33,6 +33,7 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
     if not raw_dir.is_dir():
         raise ValueError(f"no raw/chapters directory under {root}")
     index = LocalIndex(root)
+    index_identity = {"backend": backend, "model": "none"}
     if index.manifest.embedding_backend != backend:
         index.manifest.embedding_backend = backend
         index.manifest.embedding_model = "none" if backend == "lexical" else "configured"
@@ -47,13 +48,26 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
             continue
         relative = path.relative_to(root)
         key = relative.as_posix()
+        text = path.read_text(encoding="utf-8")
         digest = index.manifest.chapter_hash(path)
+        chunking = chunking_profile(text)
         known = index.manifest.chapters.get(key)
-        if known and known.get("content_hash") == digest:
+        if (
+            known
+            and known.get("content_hash") == digest
+            and known.get("chunking") == chunking
+            and known.get("index_identity") == index_identity
+        ):
             reused += 1
             continue
-        chunks = chunk_text(path.read_text(encoding="utf-8"), key, chapter)
-        old_ids, new_ids = index.update(relative, chapter, chunks)
+        chunks = chunk_text(text, key, chapter)
+        old_ids, new_ids = index.update(
+            relative,
+            chapter,
+            chunks,
+            chunking=chunking,
+            index_identity=index_identity,
+        )
         added += len(new_ids)
         changed += 1
         print(f"indexed chapter {chapter}: {len(chunks)} chunk(s), {len(old_ids)} replaced")
@@ -69,6 +83,11 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
         raise ValueError(f"no raw/chapters directory under {root}")
     embedder = build_embedder(provider)
     index = CloudVectorIndex(root, embedder)
+    provider_identity = embedder.identity()
+    index_identity = {
+        "backend": str(provider_identity.get("provider", getattr(embedder, "provider", "vector"))),
+        "model": str(provider_identity.get("model", "configured")),
+    }
     removed = index.manifest.prune_missing_chapters(root)
     if removed["chunk_ids"]:
         vectors = index._load_vectors()
@@ -83,19 +102,26 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
             continue
         relative = path.relative_to(root)
         key = relative.as_posix()
+        text = path.read_text(encoding="utf-8")
         digest = index.manifest.chapter_hash(path)
+        chunking = chunking_profile(text)
         known = index.manifest.chapters.get(key)
-        identity = embedder.identity()
         if (
             known
             and known.get("content_hash") == digest
-            and index.manifest.embedding_backend == str(identity.get("provider"))
-            and index.manifest.embedding_model == str(identity.get("model"))
+            and known.get("chunking") == chunking
+            and known.get("index_identity") == index_identity
         ):
             reused += 1
             continue
-        chunks = chunk_text(path.read_text(encoding="utf-8"), key, chapter)
-        replaced, new_count = index.update_chapter(relative, chapter, chunks)
+        chunks = chunk_text(text, key, chapter)
+        replaced, new_count = index.update_chapter(
+            relative,
+            chapter,
+            chunks,
+            chunking=chunking,
+            index_identity=index_identity,
+        )
         changed += 1
         added += new_count
         print(f"embedded chapter {chapter}: {new_count} chunk(s), {replaced} replaced")

@@ -24,7 +24,7 @@ python scripts/ingest_book.py index D:/books/fou-ren
 python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么？" --retrieval-only
 ```
 
-BGE-M3 vectors are persisted at `<book>/.onebookwiki/vectors.json`; unchanged chapters are reused only when both the backend and configured model are unchanged. Re-run the index command after switching from ModelScope or changing the model path so vector spaces are not mixed.
+BGE-M3 vectors are persisted at `<book>/.onebookwiki/vectors.json`; unchanged chapters are reused only when the raw content, chunk profile, backend, and configured model all match. The default chunk profile is `400/60/520` tokens for Chinese/CJK and `500/75/650` for English (target/overlap/hard maximum). Re-run the index command after changing the chunk profile, switching from ModelScope, or changing the model path so derived vectors are rebuilt with one consistent identity.
 
 ## ModelScope embeddings
 
@@ -40,9 +40,11 @@ python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么
 python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么？" --retrieval hybrid --generate --provider openai-compatible --max-output-tokens 512
 ```
 
-The cloud backend sends only changed chunk text to `https://api-inference.modelscope.cn/v1` using `Qwen/Qwen3-Embedding-8B`. Vectors are persisted at `<book>/.onebookwiki/vectors.json`; unchanged raw chapters are not re-embedded. The token is read only from `MODELSCOPE_API_KEY` (or `ONEBOOKWIKI_EMBEDDING_API_KEY`) and is never stored in the manifest, logs, or source files. Copy `.env.example` for the variable names, but do not commit a real credential.
+The cloud backend sends changed chunk text to `https://api-inference.modelscope.cn/v1` using `Qwen/Qwen3-Embedding-8B`. Vectors are persisted at `<book>/.onebookwiki/vectors.json`; a chapter is reused only when its raw content, chunk profile, provider, and model all match. The token is read only from `MODELSCOPE_API_KEY` (or `ONEBOOKWIKI_EMBEDDING_API_KEY`) and is never stored in the manifest, logs, or source files. Copy `.env.example` for the variable names, but do not commit a real credential.
 
 `ingest_pdf.py` preserves PDF page boundaries as Markdown headings. Its simple page-count splitting is deterministic but is not semantic chapter detection; pass `--pages-per-chapter` conservatively, then rename/split the resulting raw files after checking the book's table of contents.
+
+For PDFs that already contain an OCR-generated text layer, PDF import applies conservative, coordinate-based cleanup by default before it writes raw chapters: `--pdf-postprocess auto` removes corroborated page-edge headers/footers and isolated page labels, normalizes Unicode/spacing, repairs safe English line-wrap hyphens, restores paragraphs, and orders clear two-column pages. It does **not** run OCR, an LLM, a spelling corrector, Chinese segmentation, or Traditional/Simplified conversion. `analyse_pdf()` still derives the outline from the native extracted view, so this cleanup does not change chapter boundaries; the processed view is only used for raw/RAG text after those boundaries are fixed. Use `--pdf-postprocess off` to retain the unmodified text layer or `--pdf-postprocess strict` to retain a page if a conservative transformation would empty it. Complex tables, footnotes, sidebars, and mixed layouts are kept conservatively rather than inferred. Changing this setting changes raw chapter text, so reimport with `--force` before reindexing.
 
 ## EPUB/PDF import and generation
 
@@ -50,7 +52,7 @@ EPUB import uses only the Python standard library and preserves spine/href prove
 
 ```text
 python scripts/ingest_epub.py path/to/book.epub path/to/project
-python scripts/ingest_pdf.py path/to/book.pdf path/to/project --pages-per-chapter 25
+python scripts/ingest_pdf.py path/to/book.pdf path/to/project --pages-per-chapter 25 --pdf-postprocess auto
 python scripts/ingest_book.py index path/to/project --backend lexical
 ```
 
