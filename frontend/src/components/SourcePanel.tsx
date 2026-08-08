@@ -30,6 +30,21 @@ export default function SourcePanel({ record, width, minWidth, maxWidth, onWidth
     formatEpubLocator(record),
     formatLocator(record),
   ].filter((detail): detail is string => Boolean(detail))));
+  const excerptLines = record.excerpt?.split('\n') || [];
+  const hasLineRange = Boolean(
+    record.excerpt !== undefined
+    && !record.excerpt_truncated
+    && Number.isInteger(record.excerpt_start_line)
+    && Number.isInteger(record.excerpt_end_line)
+    && Number.isInteger(record.start_line)
+    && Number.isInteger(record.end_line)
+    && record.excerpt_start_line! <= record.excerpt_end_line!
+    && record.start_line! <= record.end_line!
+    && record.excerpt_end_line === record.excerpt_start_line! + excerptLines.length - 1,
+  );
+  const sourceRange = record.source_path && Number.isInteger(record.start_line) && Number.isInteger(record.end_line)
+    ? `${record.source_path} · lines ${record.start_line}-${record.end_line}`
+    : undefined;
 
   const endResize = (target?: HTMLDivElement, pointerId?: number) => {
     if (target && typeof pointerId === 'number' && target.hasPointerCapture(pointerId)) {
@@ -102,7 +117,27 @@ export default function SourcePanel({ record, width, minWidth, maxWidth, onWidth
       />
       <div className="source-header"><div><span className="eyebrow">SOURCE LOCATION</span><h2>{title}</h2></div><button type="button" className="close-button" onClick={onClose} aria-label="关闭来源面板">×</button></div>
       {details.length > 0 && <div className="source-card">{details.map(detail => <span key={detail}>{detail}</span>)}</div>}
-      {record.excerpt && <blockquote>{record.excerpt}</blockquote>}
+      {sourceRange && <p className="source-range">{sourceRange}</p>}
+      {hasLineRange ? (
+        <div className="evidence-lines" aria-label="Evidence excerpt with source line numbers">
+          {excerptLines.map((text, index) => {
+            const lineNumber = record.excerpt_start_line! + index;
+            const isStart = lineNumber === record.start_line;
+            const isEnd = lineNumber === record.end_line;
+            const marker = isStart && isEnd ? 'single' : isStart ? 'start' : isEnd ? 'end' : undefined;
+            return (
+              <div key={lineNumber} className="evidence-line" data-marker={marker}>
+                <span className="evidence-line-number" aria-hidden="true">{lineNumber}</span>
+                <span className="evidence-line-text">
+                  {text || ' '}
+                  {isStart && <span className="screen-reader-text"> Evidence start line.</span>}
+                  {isEnd && <span className="screen-reader-text"> Evidence end line.</span>}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : record.excerpt ? <blockquote>{record.excerpt}</blockquote> : null}
     </aside>
   );
 }

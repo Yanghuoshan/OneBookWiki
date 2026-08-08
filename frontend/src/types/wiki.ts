@@ -46,8 +46,16 @@ export type WikiStructure = {
 export type EvidenceRecord = {
   evidence_id: string;
   chunk_id?: string;
+  source_path?: string;
+  chapter?: number;
+  start_line?: number;
+  end_line?: number;
   quote?: string;
   excerpt?: string;
+  excerpt_start_line?: number;
+  excerpt_end_line?: number;
+  excerpt_truncated?: boolean;
+  source_hash?: string;
   book_title?: string;
   source_title?: string;
   breadcrumb?: string[];

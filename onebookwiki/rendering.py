@@ -126,6 +126,26 @@ def _chapter_link(chapter: ChapterInterpretation, prefix: str = "") -> str:
     return f"[{_chapter_label(chapter)}]({prefix}chapters/{chapter.chapter:02d}-{slugify(_chapter_label(chapter))}.md)"
 
 
+def _evidence_excerpt(root: Path, ref: EvidenceRef) -> dict[str, object]:
+    """Return the complete displayable source range for an evidence reference."""
+    result: dict[str, object] = {"excerpt": "", "excerpt_truncated": False}
+    raw_path = root / ref.source_path
+    if not raw_path.is_file() or ref.start_line < 1 or ref.end_line < ref.start_line:
+        return result
+    try:
+        source_lines = raw_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return result
+    if ref.end_line > len(source_lines):
+        return result
+    result.update({
+        "excerpt": "\n".join(source_lines[ref.start_line - 1 : ref.end_line]),
+        "excerpt_start_line": ref.start_line,
+        "excerpt_end_line": ref.end_line,
+    })
+    return result
+
+
 def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation], book_title: str = "") -> Path:
     source_hash = ""
     source_path = root / ".onebookwiki" / "source.json"
@@ -137,10 +157,6 @@ def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation], boo
     chapter_by_number = {chapter.chapter: chapter for chapter in chapters}
     records = {}
     for evidence_id, ref in _evidence_index(root, chapters).items():
-        excerpt = ""
-        raw_path = root / ref.source_path
-        if raw_path.is_file() and ref.start_line > 0 and ref.end_line >= ref.start_line:
-            excerpt = "\n".join(raw_path.read_text(encoding="utf-8").splitlines()[ref.start_line - 1 : ref.end_line]).strip()[:800]
         chapter = chapter_by_number.get(ref.chapter)
         semantic = {
             "book_title": book_title,
@@ -154,8 +170,14 @@ def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation], boo
             "href": chapter.href or None if chapter else None,
             "fragment": chapter.fragment or None if chapter else None,
         }
-        records[evidence_id] = {**to_dict(ref), **semantic, "display_label": display_label(ref), "excerpt": excerpt, "source_hash": source_hash}
-    payload = {"schema_version": 1, "evidence": records}
+        records[evidence_id] = {
+            **to_dict(ref),
+            **semantic,
+            **_evidence_excerpt(root, ref),
+            "display_label": display_label(ref),
+            "source_hash": source_hash,
+        }
+    payload = {"schema_version": 2, "evidence": records}
     targets = [root / ".onebookwiki" / "artifacts" / "evidence.json", root / "wiki" / "evidence.json"]
     for target in targets:
         target.parent.mkdir(parents=True, exist_ok=True)

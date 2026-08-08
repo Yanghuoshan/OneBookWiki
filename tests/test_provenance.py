@@ -84,6 +84,47 @@ Third page text.
             self.assertNotIn("`C1E1`", rendered)
             self.assertEqual(evidence["evidence"]["C1E1"]["display_label"], "PDF pp. 4-5")
 
+    def test_evidence_index_keeps_complete_line_range_and_falls_back_for_invalid_source(self):
+        valid_ref = EvidenceRef(
+            evidence_id="C1E1",
+            chunk_id="0001-0001",
+            source_path="raw/chapters/01-sample.md",
+            chapter=1,
+            start_line=1,
+            end_line=3,
+        )
+        invalid_ref = EvidenceRef(
+            evidence_id="C1E2",
+            chunk_id="0001-0002",
+            source_path="raw/chapters/missing.md",
+            chapter=1,
+            start_line=1,
+            end_line=2,
+        )
+        chapter = ChapterInterpretation(chapter=1, title="Sample", evidence=[valid_ref, invalid_ref])
+        long_line = "x" * 900
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw = root / valid_ref.source_path
+            raw.parent.mkdir(parents=True)
+            raw.write_text(f"first line\n{long_line}\nlast line\n", encoding="utf-8")
+            render_book(BookSynthesis(title="Sample"), [chapter], root)
+            published = json.loads((root / "wiki" / "evidence.json").read_text(encoding="utf-8"))
+            artifact = json.loads((root / ".onebookwiki" / "artifacts" / "evidence.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(published, artifact)
+        self.assertEqual(published["schema_version"], 2)
+        valid = published["evidence"]["C1E1"]
+        self.assertEqual(valid["excerpt"], f"first line\n{long_line}\nlast line")
+        self.assertEqual(valid["excerpt_start_line"], 1)
+        self.assertEqual(valid["excerpt_end_line"], 3)
+        self.assertFalse(valid["excerpt_truncated"])
+        invalid = published["evidence"]["C1E2"]
+        self.assertEqual(invalid["excerpt"], "")
+        self.assertFalse(invalid["excerpt_truncated"])
+        self.assertNotIn("excerpt_start_line", invalid)
+        self.assertNotIn("excerpt_end_line", invalid)
+
     def test_rendered_structure_keeps_source_outline_page_ids_valid(self):
         chapter = ChapterInterpretation(
             chapter=1,

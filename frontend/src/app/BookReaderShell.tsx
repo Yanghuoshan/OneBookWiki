@@ -10,7 +10,7 @@ type Props = { initialStructure?: WikiStructure; initialEvidence?: EvidenceIndex
 const NAVIGATION_WIDTH = 280;
 const SOURCE_PANEL_DEFAULT_WIDTH = 320;
 const SOURCE_PANEL_MIN_WIDTH = 240;
-const SOURCE_PANEL_MAX_WIDTH = 560;
+const SOURCE_PANEL_MAX_WIDTH = 760;
 const CONTENT_MIN_WIDTH = 360;
 
 function clamp(value: number, minimum: number, maximum: number): number {
