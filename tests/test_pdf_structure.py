@@ -8,7 +8,7 @@ from onebookwiki.generation import GenerationError, GenerationOptions, generate_
 from onebookwiki.importers import import_pdf
 from onebookwiki.index import LocalIndex
 from onebookwiki.pdf_postprocess import postprocess_pdf_pages
-from onebookwiki.source_structure import PageBlock, PdfLine, PdfPage, PdfSpan, SourceUnit, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
+from onebookwiki.source_structure import PageBlock, PdfLine, PdfPage, PdfSpan, SourceUnit, _page_label_value, _toc_pages, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
 
 
 class PdfStructureTest(unittest.TestCase):
@@ -96,6 +96,43 @@ class PdfStructureTest(unittest.TestCase):
                 ("结语", 61, "page_then_title"),
             ],
         )
+
+    def test_multiline_toc_continuation_repairs_ocr_page_labels(self):
+        pages = [
+            PdfPage(3, "目录\n第一章 起点 / 005\n第二章 真理 / 069\n第三章 艺术 / i(>5"),
+            PdfPage(4, "结论 / l2 3\n作品列表 / 135"),
+            PdfPage(5, "第一章 起点\n这里开始的是正文，而不是目录。"),
+        ]
+        self.assertEqual([page.number for page in _toc_pages(pages)], [3, 4])
+        self.assertEqual(_page_label_value("001"), 1)
+        self.assertEqual(_page_label_value("l2 3"), 123)
+        self.assertEqual(_page_label_value("i(>5"), 105)
+        self.assertIsNone(_page_label_value("ISBN 978-7-0000"))
+        self.assertEqual(
+            [(entry["title"], entry["printed_page"]) for entry in parse_printed_toc(_toc_pages(pages))],
+            [("第一章 起点", 5), ("第二章 真理", 69), ("第三章 艺术", 105), ("结论", 123), ("作品列表", 135)],
+        )
+
+    def test_toc_uses_validated_offset_and_conclusion_boundary(self):
+        pages = [PdfPage(number, "正文") for number in range(1, 29)]
+        pages[1] = PdfPage(2, "目录\n第一章 起点 / 005\n第二章 真理 / 009\n第三章 艺术 / 013")
+        pages[2] = PdfPage(3, "结论 / 021")
+        pages[8] = PdfPage(9, "第一章 起点\n第一章的正文从此处开始，提供足够长的内容证据。")
+        pages[12] = PdfPage(13, "第二章 真理\n第二章的正文从此处开始，提供足够长的内容证据。")
+        # The third title is deliberately absent. The three direct matches establish
+        # offset +4 and safely map it to its TOC-implied physical start.
+        pages[16] = PdfPage(17, "第三章正文从此处开始，提供足够长的内容证据。")
+        pages[24] = PdfPage(25, "结\n论\n最后总结全书的主要观点，并提供足够长的内容证据。")
+        result = analyse_pdf(pages, Path("damaged-toc.pdf"), min_confidence=0.45)
+        self.assertEqual(result.method, "toc")
+        self.assertEqual(
+            [(unit.title, unit.physical_page_start) for unit in result.units],
+            [("前置材料", 1), ("第一章 起点", 9), ("第二章 真理", 13), ("第三章 艺术", 17), ("结论", 25)],
+        )
+        toc = next(method for method in result.report["methods"] if method["method"] == "toc")
+        self.assertEqual(toc["direct_match_offset"], 4)
+        self.assertTrue(toc["direct_match_offset_evidence"]["accepted"])
+        self.assertTrue(toc["safe_alignment"])
 
     def test_content_headings_ignore_ocr_running_headers(self):
         pages = [

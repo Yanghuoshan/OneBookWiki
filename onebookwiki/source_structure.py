@@ -303,8 +303,38 @@ def _kind(title: str) -> str:
     return "section"
 
 
+_TOC_PAGE_TOKEN = r"[0-9OolIiS〇<>()[\]{}（）_.,:：;；\-—–]"
+_PAGE_LABEL_CHARS = r"[0-9OolIiS〇<>()[\]{}（）_.,:：;；\-—–\s]"
+
+
+def _toc_page_evidence(page: PdfPage) -> bool:
+    """Return whether a page plausibly continues a nearby printed TOC."""
+    lines = _page_lines(page)
+    if not lines:
+        return False
+    page_labels = sum(_page_label_value(line) is not None for line in lines)
+    slash_rows = sum(
+        bool(re.search(rf"/\s*{_PAGE_LABEL_CHARS}{{1,12}}(?=\s|/|$)", line))
+        for line in lines
+    )
+    title_lines = sum(_looks_like_title(line) for line in lines[:12])
+    # A continuation page normally has either isolated page labels beside short
+    # titles, or at least one slash-delimited row. Body prose alone is not enough.
+    return slash_rows >= 1 or (page_labels >= 1 and title_lines >= 1)
+
+
 def _toc_pages(pages: list[PdfPage]) -> list[PdfPage]:
-    return [page for page in pages[: min(len(pages), 20)] if any(marker in page.text.lower() for marker in TOC_MARKERS)]
+    """Find the first TOC and its contiguous continuation pages."""
+    window = pages[: min(len(pages), 20)]
+    start = next((index for index, page in enumerate(window) if any(marker in page.text.lower() for marker in TOC_MARKERS)), None)
+    if start is None:
+        return []
+    selected = [window[start]]
+    index = start + 1
+    while index < len(window) and _toc_page_evidence(window[index]):
+        selected.append(window[index])
+        index += 1
+    return selected
 
 
 def _page_label_value(value: str) -> int | None:
@@ -312,7 +342,10 @@ def _page_label_value(value: str) -> int | None:
     translated = _clean_space(value).translate(str.maketrans({
         "O": "0", "o": "0", "〇": "0", "I": "1", "i": "1", "l": "1", "S": "5",
     }))
-    compact = re.sub(r"[\s\[\]{}()（）_.,:：;；\-—–]", "", translated)
+    # Some embedded fonts turn the zero glyph in a page label into ``(>`` or a
+    # similar paired bracket. Only repair that narrow shape in an otherwise label.
+    translated = re.sub(r"(?:\(\s*>|<\s*\)|\[\s*>|>\s*\])", "0", translated)
+    compact = re.sub(r"[\s\[\]{}()（）<>_.,:：;；\-—–]", "", translated)
     if not re.fullmatch(r"\d{1,4}", compact):
         return None
     return int(compact)
@@ -362,12 +395,41 @@ def parse_printed_toc(pages: Iterable[PdfPage]) -> list[dict[str, Any]]:
     pending_page: int | None = None
     pending_page_line: int | None = None
     marker_keys = {normalise(marker) for marker in TOC_MARKERS}
-    page_token = r"[0-9OolIiS〇][0-9OolIiS〇\s\[\]{}()（）_.,:：;；\-—–]{0,7}"
+    page_token = rf"(?:{_PAGE_LABEL_CHARS}{{1,12}})"
     row = re.compile(rf"^(?P<title>.+?)(?:\s*(?:[.·…]{{2,}}|/)\s*|\s{{2,}})(?P<page>{page_token})\s*$")
     numbered_row = re.compile(
         rf"^(?P<title>(?:第?[一二三四五六七八九十百千万0-9]+(?:部分|部|章|节|節)|chapter\s+\d+|part\s+\d+).+?)\s+(?P<page>{page_token})\s*$",
         re.IGNORECASE,
     )
+
+    def compact_rows(line: str) -> list[tuple[str, int]]:
+        """Parse dense ``title/page`` rows whose extraction lost column spacing."""
+        rows: list[tuple[str, int]] = []
+        title_pattern = re.compile(r"(?P<title>(?:第?[一二三四五六七八九十百千万0-9]+\s*)?[一-鿿][^/\n]{1,80}?)\s*/\s*")
+        matches = list(title_pattern.finditer(line))
+        for index, match in enumerate(matches):
+            title = match.group("title").strip()
+            value_end = matches[index + 1].start() if index + 1 < len(matches) else len(line)
+            if index and title[:1].isdigit():
+                previous_value = line[matches[index - 1].end():match.start()]
+                combined_label = f"{previous_value}{title[0]}"
+                if previous_value.lstrip().startswith(("l", "I", "i")) and _parse_page_number(combined_label) is not None:
+                    title = title[1:].lstrip()
+            value = line[match.end():value_end]
+            printed = _parse_page_number(value)
+            if index + 1 < len(matches) and value.lstrip().startswith(("l", "I", "i")):
+                # The next compact title may begin with a digit which belongs to an
+                # OCR-damaged page label such as ``l2 3``. Prefer its longest valid
+                # prefix before treating that digit as the next title number.
+                extended = line[match.end():]
+                for stop in range(min(len(extended), 12), 0, -1):
+                    candidate = _parse_page_number(extended[:stop])
+                    if candidate is not None:
+                        printed = candidate
+                        break
+            if printed is not None:
+                rows.append((title, printed))
+        return rows
 
     def append(title: str, printed: int | None, page: int, line: int, style: str) -> bool:
         cleaned = _clean_space(title).strip(".·… ")
@@ -388,9 +450,6 @@ def parse_printed_toc(pages: Iterable[PdfPage]) -> list[dict[str, Any]]:
         return True
 
     for page in pages:
-        pending_title = None
-        pending_page = None
-        pending_page_line = None
         for line_number, raw in enumerate(_page_lines(page), 1):
             line = _clean_space(raw)
             if normalise(line) in marker_keys:
@@ -398,6 +457,17 @@ def parse_printed_toc(pages: Iterable[PdfPage]) -> list[dict[str, Any]]:
                 pending_page = None
                 pending_page_line = None
                 continue
+            line = re.sub(r"^目录\s*", "", line)
+            compact = compact_rows(line)
+            if compact:
+                emitted = False
+                for title, printed in compact:
+                    emitted = append(title, printed, page.number, line_number, "inline") or emitted
+                if emitted:
+                    pending_title = None
+                    pending_page = None
+                    pending_page_line = None
+                    continue
             match = row.match(line) or numbered_row.match(line)
             if match:
                 append(
@@ -439,11 +509,12 @@ def parse_printed_toc(pages: Iterable[PdfPage]) -> list[dict[str, Any]]:
 
 
 def _body_follows(pages: list[PdfPage], page_index: int, line_index: int) -> bool:
-    """Check that a candidate transitions into prose on this or the next page."""
+    """Check that a candidate transitions into prose on this or a nearby page."""
     probes: list[str] = _page_lines(pages[page_index])[line_index + 1:]
-    if not probes and page_index + 1 < len(pages):
-        probes = _page_lines(pages[page_index + 1])[:4]
-    for line in probes[:6]:
+    if not probes:
+        for next_index in range(page_index + 1, min(len(pages), page_index + 3)):
+            probes.extend(_page_lines(pages[next_index])[:4])
+    for line in probes[:10]:
         if _page_label_value(line) is not None:
             continue
         if _structural_heading(line) or _marker_kind(line):
@@ -479,8 +550,19 @@ def _content_boundary_candidates(pages: list[PdfPage], toc_titles: Iterable[str]
         if page_line_keys & marker_keys:
             continue
         lines = _page_lines(page)
+        line_options: list[tuple[int, str, int]] = []
         for line_index, line in enumerate(lines[:4]):
-            title = _clean_space(line)
+            line_options.append((line_index, _clean_space(line), line_index))
+            if line_index + 1 >= min(len(lines), 4):
+                continue
+            first, second = lines[line_index], lines[line_index + 1]
+            if len(normalise(first)) > 24 or len(normalise(second)) > 24:
+                continue
+            joined = _clean_space(f"{first} {second}")
+            joined_signature = normalise(joined)
+            if joined_signature in targets or _marker_kind(joined_signature):
+                line_options.append((line_index, joined, line_index + 1))
+        for line_index, title, consumed_index in line_options:
             if not _looks_like_title(title):
                 continue
             if len(normalise(title)) < 2:
@@ -492,7 +574,7 @@ def _content_boundary_candidates(pages: list[PdfPage], toc_titles: Iterable[str]
             if not (structural or marker_kind or matches_toc):
                 continue
             kind = marker_kind or (_kind(title) if structural else "section")
-            body_after = _body_follows(pages, page_index, line_index)
+            body_after = _body_follows(pages, page_index, consumed_index)
             if not page.blocks and not body_after and not (structural and matches_toc):
                 continue
             top_layout, prominent = _layout_heading_evidence(page, title, signature)
@@ -603,6 +685,24 @@ def _predicted_offset(pages: list[PdfPage]) -> tuple[int | None, dict[str, Any]]
     return median, {"accepted": True, "offset": median, "anchors": len(offsets), "agreeing": len(agreeing)}
 
 
+def _offset_from_matches(entries: list[dict[str, Any]], matches: list[tuple[int, float, str] | None]) -> tuple[int | None, dict[str, Any]]:
+    """Infer a printed-to-physical offset from strong direct TOC matches."""
+    anchors = [
+        match[0] - int(entry["printed_page"])
+        for entry, match in zip(entries, matches)
+        if match is not None and match[2] in {"content_boundary", "page_text"} and match[1] >= 0.60
+    ]
+    if len(anchors) < 3:
+        return None, {"accepted": False, "reason": "fewer_than_three_direct_matches", "anchors": len(anchors)}
+    median = int(round(statistics.median(anchors)))
+    agreeing = [value for value in anchors if abs(value - median) <= 1]
+    accepted = len(agreeing) >= 3 and len(agreeing) / len(anchors) >= 0.60
+    report = {"accepted": accepted, "offset": median, "anchors": len(anchors), "agreeing": len(agreeing)}
+    if not accepted:
+        report["reason"] = "direct_match_offsets_do_not_converge"
+    return (median if accepted else None), report
+
+
 def _toc_candidates(
     entry: dict[str, Any],
     pages: list[PdfPage],
@@ -703,6 +803,45 @@ def _outline_from_units(units: list[SourceUnit]) -> list[SourceNode]:
     return roots
 
 
+def _complete_toc_matches(
+    entries: list[dict[str, Any]],
+    matches: list[tuple[int, float, str] | None],
+    boundaries: ContentBoundaryDetection,
+) -> tuple[list[tuple[int, float, str] | None], list[dict[str, Any]]]:
+    """Fill exact TOC title matches and semantic endpoints from detected boundaries."""
+    completed = list(matches)
+    actions: list[dict[str, Any]] = []
+    by_signature = {candidate.signature: candidate for candidate in boundaries.accepted}
+    for index, (entry, match) in enumerate(zip(entries, completed)):
+        if match is not None:
+            continue
+        candidate = by_signature.get(normalise(str(entry["title"])))
+        if candidate is None:
+            continue
+        completed[index] = (candidate.page, candidate.score, "content_boundary_completion")
+        actions.append({"title": entry["title"], "physical_page": candidate.page, "source": "exact_content_boundary"})
+
+    # A known concluding marker must never remain swallowed by the final TOC unit.
+    # It may be absent from a damaged TOC, so append it only when it is a high-confidence
+    # monotonic endpoint that is not already represented by a matched title.
+    mapped_signatures = {normalise(str(entry["title"])) for entry, match in zip(entries, completed) if match is not None}
+    for candidate in boundaries.accepted:
+        if candidate.kind != "back_matter" or candidate.score < 0.70 or candidate.signature in mapped_signatures:
+            continue
+        previous = max((match[0] for match in completed if match is not None), default=0)
+        if candidate.page > previous:
+            entries.append({
+                "title": candidate.title.replace(" ", "") if _marker_kind(candidate.signature) else candidate.title,
+                "printed_page": None,
+                "toc_page": None,
+                "line": None,
+                "parse_style": "content_boundary_completion",
+            })
+            completed.append((candidate.page, candidate.score, "content_boundary_completion"))
+            actions.append({"title": candidate.title, "physical_page": candidate.page, "source": "semantic_endpoint"})
+    return completed, actions
+
+
 def _units_from_mapped_toc(entries: list[dict[str, Any]], selected: list[tuple[int, float, str] | None], page_count: int) -> list[SourceUnit]:
     mapped = [(entry, candidate) for entry, candidate in zip(entries, selected) if candidate is not None]
     units: list[SourceUnit] = []
@@ -718,9 +857,13 @@ def _units_from_mapped_toc(entries: list[dict[str, Any]], selected: list[tuple[i
         if end < start:
             continue
         title = str(entry["title"])
+        evidence = {"matched_page": start, "match_source": match_source}
+        if entry.get("toc_page") is not None:
+            evidence["toc_page"] = entry["toc_page"]
+        if entry.get("printed_page") is not None:
+            evidence["printed_page"] = entry["printed_page"]
         units.append(SourceUnit(
-            f"unit-{number:02d}", title, _kind(title), (title,), start, end, round(score, 4),
-            {"toc_page": entry["toc_page"], "printed_page": entry["printed_page"], "matched_page": start, "match_source": match_source},
+            f"unit-{number:02d}", title, _kind(title), (title,), start, end, round(score, 4), evidence,
         ))
         number += 1
     return units
@@ -959,23 +1102,51 @@ def analyse_pdf(
     allow_toc = mode in {"auto", "toc"} or bookmark_rejected_for_coverage
     if not selected and allow_toc:
         offset, offset_report = _predicted_offset(pages)
+        toc_page_numbers = {page.number for page in toc_pages}
         candidates = [
-            _toc_candidates(entry, pages, detected, offset, {page.number for page in toc_pages})
+            _toc_candidates(entry, pages, detected, offset, toc_page_numbers)
             for entry in entries
         ]
         matches = _monotonic_alignment(entries, candidates) if entries else []
         inferred_front = _infer_first_front_matter_start(entries, matches, pages, toc_pages)
         if inferred_front is not None:
             matches[0] = inferred_front
+        matched_offset, matched_offset_report = _offset_from_matches(entries, matches)
+        if matched_offset is not None:
+            for index, (entry, match) in enumerate(zip(entries, matches)):
+                if match is not None:
+                    continue
+                predicted = int(entry["printed_page"]) + matched_offset
+                if 1 <= predicted <= len(pages) and predicted not in toc_page_numbers:
+                    candidates[index].append((predicted, 0.64, "validated_page_offset"))
+                    # The printed TOC page can be a physical-page estimate rather than
+                    # a true folio. When the exact page has no standalone heading,
+                    # tolerate the first nearby prose page within the validated delta.
+                    for nearby in range(predicted + 1, min(len(pages), predicted + 4) + 1):
+                        if nearby not in toc_page_numbers:
+                            candidates[index].append((nearby, 0.63, "validated_page_offset_nearby"))
+                    candidates[index].sort(key=lambda item: (-item[1], item[0]))
+            matches = _monotonic_alignment(entries, candidates)
+            inferred_front = _infer_first_front_matter_start(entries, matches, pages, toc_pages)
+            if inferred_front is not None:
+                matches[0] = inferred_front
+        matches, completion_actions = _complete_toc_matches(entries, matches, detected)
         mapped = [match for match in matches if match is not None]
+        ordered = [match[0] for match in mapped]
+        safe_alignment = ordered == sorted(ordered) and len(ordered) == len(set(ordered))
         confidence = sum(match[1] for match in mapped) / len(mapped) if mapped else 0.0
-        accepted = len(entries) >= 2 and len(mapped) / len(entries) >= 0.7 and confidence >= max(min_confidence, 0.78)
+        accepted = len(entries) >= 2 and safe_alignment and len(mapped) / len(entries) >= 0.7 and confidence >= max(min_confidence, 0.78)
         report["methods"].append({
             "method": "toc",
             "toc_pages": [page.number for page in toc_pages],
             "entries": entries,
             "page_offset": offset,
             "page_offset_evidence": offset_report,
+            "direct_match_offset": matched_offset,
+            "direct_match_offset_evidence": matched_offset_report,
+            "completion_actions": completion_actions,
+            "safe_alignment": safe_alignment,
+            "rejection": None if accepted else "unsafe_toc_alignment" if not safe_alignment else "insufficient_toc_coverage_or_confidence",
             "candidates": [
                 [{"physical_page": page, "confidence": round(score, 4), "source": source} for page, score, source in entry_candidates]
                 for entry_candidates in candidates
