@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from onebookwiki.markdown import Candidate, contains, extract_candidates, metadata, parse_document, raw_links_of, source_content
+from onebookwiki.pdf_manifest import manifest_digest, validate_manifest
 
 CHAPTER_FILE_RE = re.compile(r"^(\d+)[-_](.+)\.md$")
 CHAPTER_META_RE = re.compile(r"^\d+$")
@@ -229,6 +230,53 @@ def print_section(title: str, values: list[str], quiet: bool = False) -> int:
     return len(values)
 
 
+def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: dict[str, object]) -> list[str]:
+    """Verify optional PDF structure-manifest provenance without touching source files."""
+    source_structure = source_metadata.get("source_structure")
+    source_provenance = source_structure.get("structure_manifest") if isinstance(source_structure, dict) else None
+    report_provenance = report.get("structure_manifest")
+    if source_provenance is None and report_provenance is None:
+        return []
+    if not isinstance(source_provenance, dict) or not isinstance(report_provenance, dict):
+        return ["PDF structure manifest provenance must appear in both source metadata and structure report"]
+    required = ("id", "status", "hash", "source_match", "application_mode", "snapshot_path")
+    if any(source_provenance.get(key) != report_provenance.get(key) for key in required):
+        return ["PDF structure manifest provenance differs between source metadata and structure report"]
+    snapshot_path = source_provenance.get("snapshot_path")
+    if not isinstance(snapshot_path, str) or not snapshot_path:
+        return ["PDF structure manifest provenance has no snapshot_path"]
+    snapshot = (root / snapshot_path).resolve()
+    metadata_root = root.resolve()
+    if not snapshot.is_relative_to(metadata_root) or not snapshot.is_file():
+        return ["PDF structure manifest snapshot is missing or unsafe"]
+    try:
+        manifest = json.loads(snapshot.read_text(encoding="utf-8"))
+        expected_pages = source_metadata.get("page_count")
+        page_count = expected_pages if isinstance(expected_pages, int) else None
+        validated = validate_manifest(manifest, page_count=page_count)
+    except (OSError, ValueError) as error:
+        return [f"PDF structure manifest snapshot is invalid: {error}"]
+    problems: list[str] = []
+    if validated["id"] != source_provenance.get("id"):
+        problems.append("PDF structure manifest snapshot id differs from provenance")
+    if manifest_digest(validated) != source_provenance.get("hash"):
+        problems.append("PDF structure manifest snapshot hash differs from provenance")
+    expected_mode = "explicit_units" if validated.get("units") else "rules_only"
+    if expected_mode != source_provenance.get("application_mode"):
+        problems.append("PDF structure manifest application mode differs from snapshot")
+    expected_name = source_metadata.get("source_name")
+    if isinstance(expected_name, str) and validated["source"]["filename"] != expected_name:
+        problems.append("PDF structure manifest snapshot source filename differs from source metadata")
+    expected_hash = source_metadata.get("source_hash")
+    manifest_hash = validated["source"].get("sha256")
+    if isinstance(expected_hash, str) and isinstance(manifest_hash, str) and manifest_hash.lower() != expected_hash.lower():
+        problems.append("PDF structure manifest snapshot source hash differs from source metadata")
+    source_match = source_provenance.get("source_match")
+    if not isinstance(source_match, dict) or source_match != {"filename": True, "page_count": True, "sha256": True}:
+        problems.append("PDF structure manifest provenance lacks verified source identity")
+    return problems
+
+
 def structure_health(root: Path) -> list[str]:
     """Validate the canonical page graph emitted with generated wiki pages."""
     structure_path = root / "wiki" / "structure.json"
@@ -339,9 +387,15 @@ def structure_health(root: Path) -> list[str]:
     report_path = root / ".onebookwiki" / "structure-report.json"
     source_path = root / ".onebookwiki" / "source.json"
     source_format = ""
+    source_metadata: dict[str, object] | None = None
     if source_path.is_file():
         try:
-            source_format = str(json.loads(source_path.read_text(encoding="utf-8")).get("format", "")).upper()
+            parsed_source = json.loads(source_path.read_text(encoding="utf-8"))
+            if not isinstance(parsed_source, dict):
+                problems.append(".onebookwiki/source.json must be a JSON object")
+            else:
+                source_metadata = parsed_source
+                source_format = str(source_metadata.get("format", "")).upper()
         except (OSError, ValueError):
             problems.append(".onebookwiki/source.json is invalid JSON")
     if source_format == "PDF":
@@ -377,6 +431,8 @@ def structure_health(root: Path) -> list[str]:
                                 problems.append("structure report postprocess has invalid pages_changed")
                             if isinstance(processed_pages, int) and isinstance(changed_pages, int) and changed_pages > processed_pages:
                                 problems.append("structure report postprocess pages_changed exceeds pages_processed")
+                    if source_metadata is not None:
+                        problems.extend(pdf_manifest_health(root, source_metadata, report))
             except (OSError, ValueError) as error:
                 problems.append(f"structure report is invalid JSON: {error}")
     return sorted(set(problems))

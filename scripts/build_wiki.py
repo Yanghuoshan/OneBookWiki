@@ -52,6 +52,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--structure", choices=("auto", "bookmarks", "toc", "headings", "ranges"), default="auto")
     parser.add_argument("--structure-min-confidence", type=float, default=0.72)
     parser.add_argument("--structure-report")
+    parser.add_argument("--structure-manifest", "--manifest", dest="structure_manifest")
     parser.add_argument("--max-unit-tokens", type=int, default=12000)
     parser.add_argument("--pdf-postprocess", choices=("off", "auto", "strict"), default="auto")
     parser.add_argument("--keep-front-matter", action="store_true")
@@ -64,7 +65,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--max-input-tokens", type=int, default=12000)
     parser.add_argument("--max-output-tokens", type=int, default=1800)
     parser.add_argument("--rollup-size", type=int, default=4)
-    parser.add_argument("--retries", type=int, default=1)
+    parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--input-rate", type=float)
     parser.add_argument("--output-rate", type=float)
     parser.add_argument("--dry-run", action="store_true")
@@ -97,6 +98,7 @@ def main(argv: list[str]) -> int:
                 structure_report=report,
                 max_unit_tokens=args.max_unit_tokens,
                 postprocess=args.pdf_postprocess,
+                structure_manifest=Path(args.structure_manifest).resolve() if args.structure_manifest else None,
             )
             print(f"imported {len(imported)} raw chapter file(s)")
         else:

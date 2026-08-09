@@ -1,3 +1,5 @@
+import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -87,6 +89,48 @@ class BookCheckerTest(unittest.TestCase):
             report.write_text('{"selected_method": "ranges", "ocr": "enabled"}', encoding="utf-8")
             checked = run(CHECKER, root)
             self.assertIn("structure report must declare OCR disabled", checked.stdout)
+
+    def test_pdf_manifest_snapshot_and_provenance_are_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.copy_example(root)
+            structure = root / "wiki" / "structure.json"
+            structure.write_text('{"pages": [], "sections": [], "sourceOutline": []}', encoding="utf-8")
+            metadata_path = root / ".onebookwiki" / "source.json"
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "schema_version": 1,
+                "id": "fixture",
+                "status": "pending-readable-source",
+                "source": {"filename": "fixture.pdf", "page_count": 3, "sha256": "f" * 64},
+            }
+            manifest_hash = hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            provenance = {
+                "id": "fixture",
+                "status": "pending-readable-source",
+                "hash": manifest_hash,
+                "source_match": {"filename": True, "page_count": True, "sha256": True},
+                "application_mode": "rules_only",
+                "snapshot_path": ".onebookwiki/structure-manifest.json",
+            }
+            metadata_path.write_text(json.dumps({
+                "format": "PDF",
+                "source_name": "fixture.pdf",
+                "source_hash": "f" * 64,
+                "page_count": 3,
+                "source_structure": {"structure_manifest": provenance},
+            }), encoding="utf-8")
+            report_path = metadata_path.parent / "structure-report.json"
+            report_path.write_text(json.dumps({
+                "selected_method": "ranges", "ocr": "disabled", "structure_manifest": provenance,
+            }), encoding="utf-8")
+            snapshot = metadata_path.parent / "structure-manifest.json"
+            snapshot.write_text(json.dumps(manifest), encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertNotIn("PDF structure manifest", checked.stdout)
+            snapshot.unlink()
+            checked = run(CHECKER, root)
+            self.assertIn("PDF structure manifest snapshot is missing or unsafe", checked.stdout)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from onebookwiki.chunking import chunk_text
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters
 from onebookwiki.importers import import_pdf
 from onebookwiki.index import LocalIndex
+from onebookwiki.pdf_manifest import validate_manifest
 from onebookwiki.pdf_postprocess import postprocess_pdf_pages
 from onebookwiki.source_structure import PageBlock, PdfLine, PdfPage, PdfSpan, SourceUnit, _page_label_value, _toc_pages, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
 
@@ -81,6 +82,14 @@ class PdfStructureTest(unittest.TestCase):
         self.assertEqual(result.units[3].physical_page_start, 8)
         self.assertEqual(result.report["ocr"], "disabled")
 
+    def test_toc_marker_normalises_chinese_spacing(self):
+        pages = [PdfPage(1, "目　录\n第一章 开始 / 005")]
+        self.assertEqual([page.number for page in _toc_pages(pages)], [1])
+        self.assertEqual(
+            [(entry["title"], entry["printed_page"]) for entry in parse_printed_toc(pages)],
+            [("第一章 开始", 5)],
+        )
+
     def test_printed_toc_parses_alternating_title_and_page_lines(self):
         pages = [PdfPage(
             1,
@@ -95,6 +104,39 @@ class PdfStructureTest(unittest.TestCase):
                 ("第二章 幸福考验", 49, "page_then_title"),
                 ("结语", 61, "page_then_title"),
             ],
+        )
+
+    def test_printed_toc_parses_dense_dotted_parenthesized_rows(self):
+        pages = [PdfPage(
+            1,
+            "目 录\n我怎样理解马克思主义...........................(1)\n工人阶级饱和的类性身份.....................(40)",
+        )]
+        entries = parse_printed_toc(pages)
+        self.assertEqual(
+            [(entry["title"], entry["printed_page"], entry["parse_style"]) for entry in entries],
+            [
+                ("我怎样理解马克思主义", 1, "dense_dotted_parenthesized"),
+                ("工人阶级饱和的类性身份", 40, "dense_dotted_parenthesized"),
+            ],
+        )
+
+    def test_printed_toc_parses_page_title_slash_stream(self):
+        pages = [PdfPage(1, "目录\n11/1 语言与存在的否定性 23/2 幼儿期与考古学方法")]
+        entries = parse_printed_toc(pages)
+        self.assertEqual(
+            [(entry["title"], entry["printed_page"], entry["parse_style"]) for entry in entries],
+            [
+                ("语言与存在的否定性", 11, "page_title_slash_stream"),
+                ("幼儿期与考古学方法", 23, "page_title_slash_stream"),
+            ],
+        )
+
+    def test_printed_toc_parses_title_page_slash_stream(self):
+        pages = [PdfPage(1, "目录\n第一章 起点 / 005 第二章 真理 / 009")]
+        entries = parse_printed_toc(pages)
+        self.assertEqual(
+            [(entry["title"], entry["printed_page"], entry["parse_style"]) for entry in entries],
+            [("第一章 起点", 5, "title_page_slash_stream"), ("第二章 真理", 9, "title_page_slash_stream")],
         )
 
     def test_multiline_toc_continuation_repairs_ocr_page_labels(self):
@@ -153,6 +195,78 @@ class PdfStructureTest(unittest.TestCase):
         self.assertEqual(diagnostics["running_headers"], {"第一章哲学与欲望": [3], "第二章幸福考验": [5]})
         self.assertEqual([candidate["page"] for candidate in diagnostics["rejected"]], [3, 5])
 
+    def test_chinese_numbered_headings_and_back_matter_are_recognised(self):
+        pages = [
+            PdfPage(1, "一、第一篇\n第一篇正文有足够长的内容，以证明这里是章节开头。"),
+            PdfPage(2, "二、第二篇\n第二篇正文有足够长的内容，以证明这里是章节开头。"),
+            PdfPage(3, "附录\n附录正文有足够长的内容，以证明这里是后置材料。"),
+            PdfPage(4, "译后记\n译后记正文有足够长的内容，以证明这里是后置材料。"),
+        ]
+        result = analyse_pdf(pages, Path("numbered.pdf"), mode="headings")
+        self.assertEqual(result.method, "headings")
+        self.assertEqual(
+            [(unit.title, unit.kind, unit.level) for unit in result.units],
+            [("一、第一篇", "chapter", 2), ("二、第二篇", "chapter", 2), ("附录", "back_matter", 1), ("译后记", "back_matter", 1)],
+        )
+
+    def test_explicit_levels_build_bounded_outline(self):
+        manifest = {
+            "schema_version": 1,
+            "id": "outline",
+            "source": {"filename": "outline.pdf", "page_count": 4},
+            "units": [
+                {"title": "第一部", "start": 1, "end": 1, "kind": "part", "level": 1},
+                {"title": "第一章", "start": 2, "end": 2, "kind": "chapter", "level": 2},
+                {"title": "第二章", "start": 3, "end": 3, "kind": "chapter", "level": 2},
+                {"title": "附录", "start": 4, "end": 4, "kind": "back_matter", "level": 1},
+            ],
+        }
+        result = analyse_pdf([PdfPage(index, "正文") for index in range(1, 5)], Path("outline.pdf"), structure_manifest=manifest)
+        self.assertEqual(result.method, "manifest")
+        self.assertEqual([node.title for node in result.outline], ["第一部", "附录"])
+        self.assertEqual([node.title for node in result.outline[0].children], ["第一章", "第二章"])
+        self.assertEqual(result.units[1].parent_id, "unit-01")
+        self.assertEqual(result.units[1].breadcrumb, ("第一部", "第一章"))
+
+    def test_rules_only_manifest_is_an_explicit_hint_not_manual_boundaries(self):
+        manifest = {
+            "schema_version": 1,
+            "id": "rules-only",
+            "source": {"filename": "rules.pdf", "page_count": 3},
+            "toc": {"markers": ["目 录"], "entries": [
+                {"title": "一、开始", "printed_page": 1, "level": 1, "kind": "chapter"},
+                {"title": "二、继续", "printed_page": 2, "level": 1, "kind": "chapter"},
+            ]},
+        }
+        pages = [
+            PdfPage(1, "目 录\n一、开始 / 1\n二、继续 / 2"),
+            PdfPage(2, "一、开始\n第一章正文有足够长的内容，以证明这里是章节开头。"),
+            PdfPage(3, "二、继续\n第二章正文有足够长的内容，以证明这里是章节开头。"),
+        ]
+        result = analyse_pdf(pages, Path("rules.pdf"), min_confidence=0.45, structure_manifest=manifest)
+        self.assertEqual(result.method, "toc")
+        self.assertEqual(result.report["structure_manifest"]["application_mode"], "rules_only")
+
+    def test_manifest_validator_rejects_non_partitioned_or_invalid_units(self):
+        valid = {
+            "schema_version": 1,
+            "id": "valid",
+            "source": {"filename": "valid.pdf", "page_count": 3},
+            "units": [
+                {"title": "一", "start": 1, "end": 1},
+                {"title": "二", "start": 2, "end": 3},
+            ],
+        }
+        self.assertEqual(validate_manifest(valid)["id"], "valid")
+        overlap = json.loads(json.dumps(valid))
+        overlap["units"][1]["start"] = 1
+        with self.assertRaisesRegex(ValueError, "exact partition"):
+            validate_manifest(overlap)
+        gap = json.loads(json.dumps(valid))
+        gap["units"][1]["start"] = 3
+        with self.assertRaisesRegex(ValueError, "exact partition"):
+            validate_manifest(gap)
+
     def test_real_book_style_toc_and_content_boundaries(self):
         pages = [PdfPage(number, "扉页") for number in range(1, 136)]
         pages[6] = PdfPage(
@@ -189,6 +303,64 @@ class PdfStructureTest(unittest.TestCase):
             "第二章幸福考验下的哲学与反哲学": [55],
             "第四章哲学的目的地与情感": [89],
         })
+
+    def test_fuzzy_toc_alignment_handles_numbered_ocr_heading_variants(self):
+        pages = [PdfPage(number, "扉页") for number in range(1, 18)]
+        pages[1] = PdfPage(2, "目录\n11/语言与存在的否定性\n23/幼儿期与考古学方法\n35/潜能与来临中的哲学的任务")
+        pages[4] = PdfPage(5, "1 语言与存在的否定性\n本章正文从这里开始，提供足够长的内容证据。")
+        pages[8] = PdfPage(9, "2 幼儿期与考古学方法\n本章正文从这里开始，提供足够长的内容证据。")
+        pages[12] = PdfPage(13, "3 潜能与来l脑中的哲学的任务\n本章正文从这里开始，提供足够长的内容证据。")
+        result = analyse_pdf(pages, Path("aganben-style.pdf"), min_confidence=0.45)
+        self.assertEqual(result.method, "toc")
+        self.assertEqual(
+            [(unit.title, unit.physical_page_start) for unit in result.units],
+            [("前置材料", 1), ("语言与存在的否定性", 5), ("幼儿期与考古学方法", 9), ("潜能与来临中的哲学的任务", 13)],
+        )
+        toc = next(method for method in result.report["methods"] if method["method"] == "toc")
+        self.assertTrue(toc["genuine_toc_evidence"])
+        self.assertTrue(toc["safe_alignment"])
+        self.assertFalse(toc["direct_match_offset_evidence"]["accepted"])
+
+    def test_fuzzy_toc_alignment_rejects_short_similar_heading(self):
+        pages = [
+            PdfPage(1, "目录\n11/政治与语言\n23/文学的实验室"),
+            PdfPage(2, "政治\n这是一段足够长的正文，但不是目录中的完整标题。"),
+            PdfPage(3, "文学的实验室\n第二章正文从这里开始，提供足够长的内容证据。"),
+        ]
+        result = analyse_pdf(pages, Path("fuzzy-negative.pdf"), min_confidence=0.45)
+        toc = next(method for method in result.report["methods"] if method["method"] == "toc")
+        self.assertFalse(toc["accepted"])
+        self.assertIsNone(toc["matches"][0])
+
+    def test_header_clusters_reject_later_ocr_variants(self):
+        pages = [
+            PdfPage(1, "一、“怎么办?”中的“怎么”\n第一章正文从这里开始，提供足够长的内容证据。", (PageBlock("一、“怎么办?”中的“怎么”", y0=20, size=20),)),
+            PdfPage(2, "一、怎么办中的怎么\n这是相同章节的后续正文，而不是新的章节。", (PageBlock("一、怎么办中的怎么", y0=20, size=20),)),
+            PdfPage(3, "二、安东尼奥·葛兰西的绝对经验主义\n第二章正文从这里开始，提供足够长的内容证据。", (PageBlock("二、安东尼奥·葛兰西的绝对经验主义", y0=20, size=20),)),
+            PdfPage(4, "二、安东尼奥♦葛兰西的绝对经验主义\n这是相同章节的后续正文，而不是新的章节。", (PageBlock("二、安东尼奥♦葛兰西的绝对经验主义", y0=20, size=20),)),
+        ]
+        result = analyse_pdf(pages, Path("zen-me-ban-style.pdf"), mode="headings")
+        self.assertEqual(result.method, "headings")
+        self.assertEqual([unit.physical_page_start for unit in result.units], [1, 3])
+        diagnostics = result.report["content_boundaries"]
+        self.assertTrue(diagnostics["header_clusters"])
+        self.assertEqual(
+            [candidate["page"] for candidate in diagnostics["rejected"] if candidate["rejection"] == "running_header"],
+            [2, 4],
+        )
+
+    def test_endpoint_only_boundaries_cannot_select_toc(self):
+        pages = [
+            PdfPage(1, "版权页"),
+            PdfPage(2, "附录\n附录正文从这里开始，提供足够长的内容证据。"),
+            PdfPage(3, "译后记\n译后记正文从这里开始，提供足够长的内容证据。"),
+        ]
+        result = analyse_pdf(pages, Path("endpoints-only.pdf"))
+        self.assertEqual(result.method, "ranges")
+        toc = next(method for method in result.report["methods"] if method["method"] == "toc")
+        self.assertFalse(toc["accepted"])
+        self.assertFalse(toc["genuine_toc_evidence"])
+        self.assertEqual(toc["rejection"], "missing_printed_toc_evidence")
 
     def test_unrecognised_pdf_uses_honest_range_label(self):
         result = analyse_pdf([PdfPage(1, ""), PdfPage(2, "")], Path("opaque.pdf"), pages_per_chapter=1)
@@ -234,6 +406,29 @@ class PdfStructureTest(unittest.TestCase):
             self.assertTrue(raw.startswith("# "))
             self.assertNotIn("# Chapter", raw)
             self.assertIn("> Source Unit:", raw)
+
+    def test_import_persists_manifest_snapshot_and_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            source = Path(tmp) / "book.pdf"
+            manifest_path = Path(tmp) / "structure.json"
+            source.write_bytes(b"fixture")
+            digest = __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps({
+                "schema_version": 1,
+                "id": "fixture",
+                "status": "pending-readable-source",
+                "source": {"filename": "book.pdf", "page_count": 2, "sha256": digest},
+                "toc": {"markers": ["目 录"]},
+            }), encoding="utf-8")
+            import_pdf(source, root, pages=["一、开始\n第一篇正文有足够长的内容。", "二、继续\n第二篇正文有足够长的内容。"], structure_manifest=manifest_path, max_unit_tokens=256)
+            report = json.loads((root / ".onebookwiki" / "structure-report.json").read_text(encoding="utf-8"))
+            metadata = json.loads((root / ".onebookwiki" / "source.json").read_text(encoding="utf-8"))
+            snapshot = root / ".onebookwiki" / "structure-manifest.json"
+            self.assertTrue(snapshot.is_file())
+            self.assertEqual(report["structure_manifest"]["id"], "fixture")
+            self.assertTrue(report["structure_manifest"]["source_match"]["sha256"])
+            self.assertEqual(metadata["source_structure"]["structure_manifest"], report["structure_manifest"])
 
     def test_processed_payload_keeps_native_outline_and_uses_synced_blocks(self):
         def layout_line(text, y0, size=10):

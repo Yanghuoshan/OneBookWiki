@@ -26,6 +26,7 @@ from .source_structure import (
     source_node_dict,
     split_unit_into_parts,
 )
+from .pdf_manifest import load_manifest
 from .pdf_postprocess import postprocess_pdf_pages
 
 
@@ -370,6 +371,7 @@ def import_pdf(
     structure_report: Path | None = None,
     max_unit_tokens: int = DEFAULT_MAX_UNIT_TOKENS,
     postprocess: str = "auto",
+    structure_manifest: Path | None = None,
 ) -> list[Path]:
     """Import a PDF as bounded source units without OCR or semantic cleanup.
 
@@ -385,6 +387,16 @@ def import_pdf(
     else:
         native_pages = [PdfPage(number=index, text=text) for index, text in enumerate(pages, 1)]
         bookmarks = []
+    source_hash = sha256_file(source)
+    manifest = None
+    manifest_hash = None
+    if structure_manifest is not None:
+        manifest, manifest_hash = load_manifest(
+            structure_manifest,
+            source=source,
+            page_count=len(native_pages),
+            source_hash=source_hash,
+        )
     analysis = analyse_pdf(
         native_pages,
         source,
@@ -394,10 +406,25 @@ def import_pdf(
         min_confidence=structure_min_confidence,
         pages_per_chapter=pages_per_chapter,
         chapter_count=chapter_count,
+        structure_manifest=manifest,
     )
     processed = postprocess_pdf_pages(native_pages, mode=postprocess)
     processed_pages = list(processed.pages)
     analysis.report["postprocess"] = processed.report
+    manifest_metadata = None
+    if manifest is not None and manifest_hash is not None:
+        snapshot = root / ".onebookwiki" / "structure-manifest.json"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        manifest_metadata = {
+            "id": manifest["id"],
+            "status": manifest.get("status", "ready"),
+            "hash": manifest_hash,
+            "source_match": {"filename": True, "page_count": True, "sha256": True},
+            "application_mode": "explicit_units" if manifest.get("units") else "rules_only",
+            "snapshot_path": snapshot.relative_to(root).as_posix(),
+        }
+        analysis.report["structure_manifest"] = manifest_metadata
     book_title = analysis.title.value
     if force:
         _clear_raw_chapters(root)
@@ -456,7 +483,7 @@ def import_pdf(
         "title_confidence": analysis.title.confidence,
         "format": "PDF",
         "source_name": source.name,
-        "source_hash": sha256_file(source),
+        "source_hash": source_hash,
         "page_count": len(native_pages),
         "pages_per_chapter": pages_per_chapter,
         "chapter_count": chapter_count,
@@ -473,6 +500,7 @@ def import_pdf(
             "outline": outline,
             "units": reading_units,
             "report_path": report_path.relative_to(root).as_posix() if report_path.is_relative_to(root) else str(report_path),
+            **({"structure_manifest": manifest_metadata} if manifest_metadata is not None else {}),
         },
         "chapters": reading_units,
     })

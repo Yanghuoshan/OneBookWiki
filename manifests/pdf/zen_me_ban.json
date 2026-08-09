@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "zen_me_ban",
+  "status": "pending-readable-source",
+  "source": {
+    "filename": "怎么办.pdf",
+    "sha256": "d93ae40ba39b67a5acaa19ca129a7624082e5db0102d8d507ecb3b0b3992f37b",
+    "page_count": 248
+  },
+  "title_override": "怎么办",
+  "toc": {
+    "markers": ["目录", "目 录", "目錄"],
+    "row_formats": ["auto"],
+    "entries": [
+      {"title": "一、“怎么办?”中的“怎么”", "printed_page": 1, "level": 1, "kind": "chapter"},
+      {"title": "二、安东尼奥·葛兰西的绝对经验主义", "printed_page": 47, "level": 1, "kind": "chapter"},
+      {"title": "三、葛兰西还是马基雅维利?", "printed_page": 91, "level": 1, "kind": "chapter"},
+      {"title": "四、葛兰西、欧洲共产主义、阶级专政", "printed_page": 135, "level": 1, "kind": "chapter"},
+      {"title": "附录", "printed_page": 171, "level": 1, "kind": "back_matter"},
+      {"title": "译后记", "printed_page": 241, "level": 1, "kind": "back_matter"}
+    ]
+  },
+  "headings": {
+    "prefixes": ["一、", "二、", "三、", "四、"],
+    "end_markers": ["附录", "译后记", "后记"]
+  },
+  "coverage": "exact-partition"
+}

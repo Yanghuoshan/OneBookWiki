@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "id": "zenyanglijie",
+  "status": "pending-readable-source",
+  "source": {
+    "filename": "zenyanglijie.pdf",
+    "sha256": "620155ffcc0ce23f5e1601015adc53a6629bf2e969ed0d9340ea6c7ed9bc9285",
+    "page_count": 92
+  },
+  "title_override": "我怎样理解马克思主义?",
+  "toc": {
+    "markers": ["目录", "目 录", "目　录"],
+    "row_formats": ["dense-dotted-parenthesized"],
+    "entries": [
+      {"title": "我怎样理解马克思主义?", "printed_page": 1, "level": 1, "kind": "chapter"},
+      {"title": "工人阶级饱和的类性身份", "printed_page": 40, "level": 1, "kind": "chapter"},
+      {"title": "“人民”一词的用法", "printed_page": 48, "level": 1, "kind": "chapter"},
+      {"title": "必须总结过去的经验", "printed_page": 61, "level": 1, "kind": "chapter"},
+      {"title": "让我们一次彻底地对选举失去兴趣!", "printed_page": 73, "level": 1, "kind": "chapter"},
+      {"title": "附录 论绘画", "printed_page": 77, "level": 1, "kind": "back_matter"}
+    ]
+  },
+  "headings": {"prefixes": [], "end_markers": ["附录", "附录论绘画"]},
+  "coverage": "exact-partition"
+}

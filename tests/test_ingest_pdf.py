@@ -27,6 +27,17 @@ class PdfSlugTest(unittest.TestCase):
                 self.assertEqual(module.main(["ingest_pdf.py", str(source), str(root), "--pdf-postprocess", "strict"]), 0)
         self.assertEqual(imported.call_args.kwargs["postprocess"], "strict")
 
+    def test_structure_manifest_is_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixture.pdf"
+            root = Path(tmp) / "fixture-project"
+            manifest = Path(tmp) / "structure.json"
+            source.write_bytes(b"fixture")
+            manifest.write_text("{}", encoding="utf-8")
+            with patch.object(module, "import_pdf", return_value=[]) as imported:
+                self.assertEqual(module.main(["ingest_pdf.py", str(source), str(root), "--manifest", str(manifest)]), 0)
+        self.assertEqual(imported.call_args.kwargs["structure_manifest"], manifest.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

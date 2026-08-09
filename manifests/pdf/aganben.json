@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "aganben",
+  "status": "pending-readable-source",
+  "source": {
+    "filename": "为什么是阿甘本.pdf",
+    "sha256": "1b2634099b4199d917da2ee729ae87651359a336176e48149d82e648f547f31c",
+    "page_count": 193
+  },
+  "title_override": "为什么是阿甘本",
+  "toc": {
+    "markers": ["目录", "目 录", "目錄"],
+    "row_formats": ["slash-stream", "page-title-slash-stream", "title-page-slash-stream"],
+    "entries": [
+      {"title": "语言与存在的否定性", "printed_page": 11, "level": 1, "kind": "chapter"},
+      {"title": "幼儿期与考古学方法", "printed_page": 23, "level": 1, "kind": "chapter"},
+      {"title": "潜能与“来临中的哲学的任务”", "printed_page": 35, "level": 1, "kind": "chapter"},
+      {"title": "政治——赤裸生命与主权权力", "printed_page": 59, "level": 1, "kind": "chapter"},
+      {"title": "姿势的家园——艺术与电影", "printed_page": 82, "level": 1, "kind": "chapter"},
+      {"title": "文学的实验室", "printed_page": 100, "level": 1, "kind": "chapter"},
+      {"title": "见证与弥赛亚时间", "printed_page": 125, "level": 1, "kind": "chapter"},
+      {"title": "阿甘本之后", "printed_page": 143, "level": 1, "kind": "section"},
+      {"title": "延伸阅读", "printed_page": 150, "level": 1, "kind": "section"},
+      {"title": "参考文献", "printed_page": 159, "level": 1, "kind": "back_matter"},
+      {"title": "索引", "printed_page": 164, "level": 1, "kind": "back_matter"}
+    ]
+  },
+  "headings": {"prefixes": [], "end_markers": ["参考文献", "索引"]},
+  "coverage": "exact-partition"
+}
