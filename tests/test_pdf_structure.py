@@ -34,6 +34,44 @@ class PdfStructureTest(unittest.TestCase):
         self.assertEqual(title.method, "filename")
         self.assertTrue(all("quality" in candidate or candidate["method"] == "filename" for candidate in title.candidates))
 
+    def test_filename_beats_prose_fragment_containing_title(self):
+        pages = [
+            PdfPage(1, "The Man Without Content", (PageBlock("The Man Without Content", size=24),)),
+            PdfPage(2, "致读者:\n版,但其处女作讨论的却是诗学和美学。《没有内容的人》是他系统", (
+                PageBlock("致读者:", size=18),
+                PageBlock("版,但其处女作讨论的却是诗学和美学。《没有内容的人》是他系统", size=16),
+            )),
+        ]
+        title = recognise_book_title(pages, Path("没有内容的人.pdf"))
+        self.assertEqual(title.value, "没有内容的人")
+        self.assertEqual(title.method, "filename")
+        self.assertFalse(any(candidate["title"].startswith("版,但其处女作") for candidate in title.candidates))
+
+    def test_standalone_title_page_line_can_beat_filename(self):
+        pages = [PdfPage(1, "没有内容的人\nGiorgio Agamben", (PageBlock("没有内容的人", size=30), PageBlock("Giorgio Agamben", size=14)))]
+        title = recognise_book_title(pages, Path("meiyou.pdf"))
+        self.assertEqual(title.value, "没有内容的人")
+        self.assertEqual(title.method, "book_text")
+
+    def test_date_and_internal_notice_do_not_beat_filename_title(self):
+        pages = [
+            PdfPage(1, "The Man Without Content\n仅供内部参考学习\n2015年5 月1 日", (
+                PageBlock("The Man Without Content", size=24),
+                PageBlock("仅供内部参考学习", size=18),
+                PageBlock("2015年5 月1 日", size=18),
+            )),
+            PdfPage(2, "2015年5 月1 日\n版,但其处女作讨论的却是诗学和美学。《没有内容的人》是他系统", (
+                PageBlock("2015年5 月1 日", size=18),
+                PageBlock("版,但其处女作讨论的却是诗学和美学。《没有内容的人》是他系统", size=16),
+            )),
+        ]
+        title = recognise_book_title(pages, Path("没有内容的人.pdf"))
+        candidate_titles = [candidate["title"] for candidate in title.candidates]
+        self.assertEqual(title.value, "没有内容的人")
+        self.assertEqual(title.method, "filename")
+        self.assertNotIn("2015年5 月1 日", candidate_titles)
+        self.assertNotIn("仅供内部参考学习", candidate_titles)
+
     def test_bookmarks_preserve_nested_outline_and_leaf_reading_units(self):
         pages = [PdfPage(index, f"第 {index} 页") for index in range(1, 8)]
         bookmarks = [

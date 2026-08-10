@@ -184,6 +184,56 @@ def _clean_filename_title(path: Path) -> str:
     return value or "Untitled book"
 
 
+def _looks_like_structural_title(value: str) -> bool:
+    value = _clean_space(value)
+    if re.search(
+        r"^(?:第?\s*[一二三四五六七八九十百千万0-9]+\s*(?:部分|部|章|节|節)|"
+        r"[一二三四五六七八九十百千万0-9]+\s*[、.]|"
+        r"chapter\s+\d+|section\s+\d+(?:\.\d+)*|part\s+\d+)",
+        value,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    compact = normalise(value)
+    return compact in {normalise(marker) for marker in (*FRONT_MATTER_MARKERS, *END_MARKERS)}
+
+
+def _looks_like_title_noise(value: str) -> bool:
+    value = _clean_space(value)
+    compact = normalise(value)
+    if re.fullmatch(r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日?", compact):
+        return True
+    if re.fullmatch(r"(?:19|20)\d{2}[./-]\d{1,2}[./-]\d{1,2}", value):
+        return True
+    if re.fullmatch(r"\d{1,2}[./-]\d{1,2}[./-](?:19|20)\d{2}", value):
+        return True
+    if re.search(r"(?:仅供|只供).{0,12}(?:参考|学习|传阅|交流|使用)", value):
+        return True
+    if re.search(r"内部.{0,8}(?:参考|学习|资料|传阅|交流|使用|流通)", value):
+        return True
+    if re.search(r"(?:禁止|不得).{0,8}(?:传播|销售|商用|传阅|流通)", value):
+        return True
+    return False
+
+
+def _looks_like_prose_fragment(value: str) -> bool:
+    value = _clean_space(value)
+    if len(value) < 18 or _looks_like_structural_title(value):
+        return False
+    clause_marks = len(re.findall(r"[，,。；;？！!?]", value))
+    if clause_marks >= 2:
+        return True
+    if clause_marks >= 1 and len(value) >= 24:
+        return True
+    if re.search(r"《[^》]{2,}》", value):
+        outside = re.sub(r"《[^》]{2,}》", "", value)
+        if len(normalise(outside)) >= 10 and re.search(r"(?:但是|但其|却是|因此|所以|然而|因为|由于|如果|那么|同时|并且|如今|最早出版于|系统)", outside):
+            return True
+    if len(value) >= 26 and re.search(r"(?:但是|但其|却是|因此|所以|然而|因为|由于|如果|那么|同时|并且|如今|最早出版于|系统)", value):
+        return True
+    return False
+
+
 def _looks_like_title(value: str) -> bool:
     value = _clean_space(value).strip("[]【】()（）")
     if not value or len(value) < 2 or len(value) > 80:
@@ -195,6 +245,8 @@ def _looks_like_title(value: str) -> bool:
         return False
     if value.count(" ") > 10 or re.search(r"https?://|www\.", value, flags=re.IGNORECASE):
         return False
+    if _looks_like_title_noise(value):
+        return False
     # Author credit lines are usually not book titles. This also excludes common
     # Western bylines even when a damaged extraction has separated the title.
     if re.search(r"(?:著|编|編|译|譯|主编|主編)\s*$", value):
@@ -202,6 +254,8 @@ def _looks_like_title(value: str) -> bool:
     if re.match(r"^(?:by|edited by|translated by|introduction by|foreword by)\b", value, flags=re.IGNORECASE):
         return False
     if re.search(r"\b(?:by|author|editor|translator)\b", value, flags=re.IGNORECASE) and len(value.split()) <= 10:
+        return False
+    if _looks_like_prose_fragment(value):
         return False
     return True
 
@@ -225,6 +279,14 @@ def _title_quality(value: str, filename_title: str) -> float:
     # deceptively similar to a full filename title; it is still only a fragment.
     if compact in filename and len(compact) / max(1, len(filename)) < 0.72:
         score -= 0.35
+    if filename in compact and compact != filename:
+        filename_coverage = len(filename) / max(1, len(compact))
+        if _looks_like_prose_fragment(value):
+            score -= 0.45
+        elif len(compact) >= len(filename) + 12 and filename_coverage < 0.55:
+            score -= 0.20
+    if re.search(r"[一-鿿]", value) and 5 <= len(compact) <= 16 and not _looks_like_structural_title(value) and not re.search(r"[，,。；;？！!?:：]", value):
+        score += 0.25
     words = [word for word in re.findall(r"[A-Za-z]+", value) if word]
     if words and all(word.isupper() for word in words) and len(words) <= 3:
         score -= 0.20
