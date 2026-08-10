@@ -2,12 +2,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from onebookwiki.chunking import chunk_text
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters
 from onebookwiki.importers import import_pdf
 from onebookwiki.index import LocalIndex
 from onebookwiki.pdf_manifest import validate_manifest
+from onebookwiki.pdf_ocr import OcrLine, OcrPageResult, PdfStructureOcrConfig
 from onebookwiki.pdf_postprocess import postprocess_pdf_pages
 from onebookwiki.source_structure import PageBlock, PdfLine, PdfPage, PdfSpan, SourceUnit, _page_label_value, _toc_pages, analyse_pdf, parse_printed_toc, recognise_book_title, split_unit_into_parts
 
@@ -406,6 +408,51 @@ class PdfStructureTest(unittest.TestCase):
             self.assertTrue(raw.startswith("# "))
             self.assertNotIn("# Chapter", raw)
             self.assertIn("> Source Unit:", raw)
+
+    def test_import_adopts_mocked_ocr_toc_and_keeps_native_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            source = Path(tmp) / "book.pdf"
+            source.write_bytes(b"fixture")
+            native = [
+                PdfPage(1, "扉页"),
+                PdfPage(2, "目录页扫描质量较差"),
+                PdfPage(3, "第一章 起点\n正文内容足以作为章节开端。"),
+                PdfPage(4, "第二章 继续\n正文内容足以作为章节开端。"),
+            ]
+            def ocr_result(page, *lines):
+                return OcrPageResult(page, 400, 600, tuple(
+                    OcrLine(text, 0.99, 20, index * 30 + 20, 300, index * 30 + 40)
+                    for index, text in enumerate(lines)
+                ), 0.99, f"page-{page}")
+            results = {2: ocr_result(2, "目录", "第一章 起点 / 1", "第二章 继续 / 2")}
+            with patch("onebookwiki.importers.extract_pdf_layout", return_value=(native, [])), patch(
+                "onebookwiki.importers.PdfStructureOcrConfig.from_env",
+                return_value=PdfStructureOcrConfig("D:/models/det", "D:/models/rec", confidence=0.75, max_pages=4),
+            ), patch("onebookwiki.importers.LocalPpOcrV5") as adapter_type:
+                adapter = adapter_type.return_value
+                adapter.run.return_value = results
+                adapter.failures = {}
+                import_pdf(source, root, title="示例书", pdf_ocr="assist", structure_min_confidence=0.4, max_unit_tokens=256)
+            report = json.loads((root / ".onebookwiki" / "structure-report.json").read_text(encoding="utf-8"))
+            raw = "\n".join(path.read_text(encoding="utf-8") for path in (root / "raw" / "chapters").glob("*.md"))
+            self.assertEqual(report["ocr_assist"]["status"], "used")
+            self.assertEqual(report["selected_method"], "toc")
+            self.assertEqual(report["ocr_assist"]["evidence_pages"], [2])
+            self.assertNotIn("第一章 起点 / 1", raw)
+            self.assertNotIn("第二章 继续 / 2", raw)
+
+    def test_import_ocr_assist_with_synthetic_pages_is_reported_and_keeps_native_payload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            source = Path(tmp) / "book.pdf"
+            source.write_bytes(b"fixture")
+            import_pdf(source, root, title="示例书", pages=["第一章 开始\n正文内容", "第二章 继续\n更多正文"], pdf_ocr="assist", max_unit_tokens=256)
+            report = json.loads((root / ".onebookwiki" / "structure-report.json").read_text(encoding="utf-8"))
+            metadata = json.loads((root / ".onebookwiki" / "source.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["ocr_assist"]["status"], "skipped")
+            self.assertEqual(report["ocr_assist"]["trigger"], "synthetic_pages")
+            self.assertEqual(metadata["source_processing"]["structure_ocr"], report["ocr_assist"])
 
     def test_import_persists_manifest_snapshot_and_provenance(self):
         with tempfile.TemporaryDirectory() as tmp:

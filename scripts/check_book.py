@@ -277,6 +277,42 @@ def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: 
     return problems
 
 
+def pdf_ocr_health(report: dict[str, object], source_metadata: dict[str, object] | None) -> list[str]:
+    """Validate OCR provenance without importing Paddle or inspecting model paths."""
+    mode = report.get("ocr")
+    if mode == "disabled":
+        return []
+    if mode != "pp-ocrv5-mobile-assist":
+        return ["structure report has invalid OCR mode"]
+    assist = report.get("ocr_assist")
+    if not isinstance(assist, dict):
+        return ["OCR assist report must be an object"]
+    problems: list[str] = []
+    if assist.get("mode") != "assist":
+        problems.append("OCR assist report has invalid mode")
+    if assist.get("role") != "structure_auxiliary_only":
+        problems.append("OCR assist report must be structure auxiliary only")
+    if assist.get("local_only") is not True:
+        problems.append("OCR assist report must declare local_only")
+    if assist.get("status") not in {"not_used", "skipped", "used", "evaluated_not_selected", "no_usable_evidence", "unavailable"}:
+        problems.append("OCR assist report has invalid status")
+    for key in ("candidate_pages", "processed_pages", "evidence_pages"):
+        value = assist.get(key)
+        if not isinstance(value, list) or any(not isinstance(page, int) or page < 1 for page in value):
+            problems.append(f"OCR assist report has invalid {key}")
+    failed_pages = assist.get("failed_pages")
+    if not isinstance(failed_pages, dict) or any(not str(page).isdigit() or not isinstance(error, str) for page, error in failed_pages.items()):
+        problems.append("OCR assist report has invalid failed_pages")
+    if not isinstance(assist.get("selected"), bool):
+        problems.append("OCR assist report has invalid selected flag")
+    if source_metadata is not None:
+        processing = source_metadata.get("source_processing")
+        provenance = processing.get("structure_ocr") if isinstance(processing, dict) else None
+        if provenance != assist:
+            problems.append("OCR assist provenance differs between source metadata and structure report")
+    return problems
+
+
 def structure_health(root: Path) -> list[str]:
     """Validate the canonical page graph emitted with generated wiki pages."""
     structure_path = root / "wiki" / "structure.json"
@@ -406,11 +442,10 @@ def structure_health(root: Path) -> list[str]:
                 report = json.loads(report_path.read_text(encoding="utf-8"))
                 if not isinstance(report, dict):
                     problems.append("structure report must be a JSON object")
-                elif report.get("ocr") != "disabled":
-                    problems.append("structure report must declare OCR disabled")
-                elif not isinstance(report.get("selected_method"), str):
-                    problems.append("structure report has no selected_method")
                 else:
+                    problems.extend(pdf_ocr_health(report, source_metadata))
+                    if not isinstance(report.get("selected_method"), str):
+                        problems.append("structure report has no selected_method")
                     postprocess = report.get("postprocess")
                     if postprocess is not None:
                         if not isinstance(postprocess, dict):

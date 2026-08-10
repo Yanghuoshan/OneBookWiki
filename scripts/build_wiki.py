@@ -55,6 +55,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--structure-manifest", "--manifest", dest="structure_manifest")
     parser.add_argument("--max-unit-tokens", type=int, default=12000)
     parser.add_argument("--pdf-postprocess", choices=("off", "auto", "strict"), default="auto")
+    parser.add_argument("--pdf-ocr", choices=("off", "assist"), default="off")
+    parser.add_argument("--pdf-ocr-dpi", type=int)
+    parser.add_argument("--pdf-ocr-confidence", type=float)
     parser.add_argument("--keep-front-matter", action="store_true")
     parser.add_argument("--force", action="store_true", help="replace existing imported raw chapters")
     parser.add_argument("--resume", action="store_true", help="resume the latest generation run")
@@ -99,6 +102,9 @@ def main(argv: list[str]) -> int:
                 max_unit_tokens=args.max_unit_tokens,
                 postprocess=args.pdf_postprocess,
                 structure_manifest=Path(args.structure_manifest).resolve() if args.structure_manifest else None,
+                pdf_ocr=args.pdf_ocr,
+                pdf_ocr_dpi=args.pdf_ocr_dpi,
+                pdf_ocr_confidence=args.pdf_ocr_confidence,
             )
             print(f"imported {len(imported)} raw chapter file(s)")
         else:

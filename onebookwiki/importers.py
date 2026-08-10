@@ -6,6 +6,7 @@ import html
 import json
 import posixpath
 import re
+import sys
 import unicodedata
 import zipfile
 from datetime import date
@@ -28,6 +29,7 @@ from .source_structure import (
 )
 from .pdf_manifest import load_manifest
 from .pdf_postprocess import postprocess_pdf_pages
+from .pdf_ocr import PdfStructureOcrConfig, LocalPpOcrV5, candidate_pages, overlay_pages
 
 
 def sha256_file(path: Path) -> str:
@@ -275,7 +277,7 @@ def extract_pdf_pages(source: Path) -> list[str]:
 def extract_pdf_layout(source: Path) -> tuple[list[PdfPage], list[dict[str, Any]]]:
     """Extract the established native view and a coordinate tree without OCR."""
     try:
-        import fitz
+        import pymupdf as fitz
     except ImportError as exc:
         raise ValueError("Install PyMuPDF with: pip install pymupdf") from exc
     document = fitz.open(source)
@@ -372,6 +374,9 @@ def import_pdf(
     max_unit_tokens: int = DEFAULT_MAX_UNIT_TOKENS,
     postprocess: str = "auto",
     structure_manifest: Path | None = None,
+    pdf_ocr: str = "off",
+    pdf_ocr_dpi: int | None = None,
+    pdf_ocr_confidence: float | None = None,
 ) -> list[Path]:
     """Import a PDF as bounded source units without OCR or semantic cleanup.
 
@@ -382,6 +387,8 @@ def import_pdf(
         raise ValueError(f"unsupported PDF structure mode: {structure}")
     if postprocess not in {"off", "auto", "strict"}:
         raise ValueError(f"unsupported PDF postprocess mode: {postprocess}")
+    if pdf_ocr not in {"off", "assist"}:
+        raise ValueError(f"unsupported PDF OCR mode: {pdf_ocr}")
     if pages is None:
         native_pages, bookmarks = extract_pdf_layout(source)
     else:
@@ -408,6 +415,104 @@ def import_pdf(
         chapter_count=chapter_count,
         structure_manifest=manifest,
     )
+    baseline_method = analysis.method
+    baseline_confidence = analysis.confidence
+    def report_ocr(message: str) -> None:
+        print(f"[pdf-ocr] {message}", file=sys.stderr, flush=True)
+
+    ocr_report: dict[str, Any] = {
+        "mode": pdf_ocr,
+        "role": "structure_auxiliary_only",
+        "local_only": True,
+        "status": "disabled" if pdf_ocr == "off" else "not_used",
+        "trigger": "disabled" if pdf_ocr == "off" else "not_required",
+        "candidate_pages": [],
+        "processed_pages": [],
+        "failed_pages": {},
+        "evidence_pages": [],
+        "selected": False,
+    }
+    if pdf_ocr == "assist":
+        if pages is not None:
+            ocr_report.update({"status": "skipped", "trigger": "synthetic_pages", "reason": "OCR requires a PDF-backed native page layout"})
+            report_ocr("skipped: synthetic --pages input has no PDF rendering source")
+        elif manifest and manifest.get("units"):
+            ocr_report.update({"status": "skipped", "trigger": "explicit_manifest_units", "reason": "validated manifest units already define the page partition"})
+            report_ocr("skipped: validated manifest units already define the page partition")
+        elif analysis.method == "bookmarks" and analysis.confidence >= max(structure_min_confidence, 0.85):
+            ocr_report.update({"status": "skipped", "trigger": "strong_bookmarks", "reason": "complete bookmark structure exceeds the confidence threshold"})
+            report_ocr(f"skipped: complete bookmark structure (confidence={analysis.confidence:.2f})")
+        else:
+            config = PdfStructureOcrConfig.from_env(dpi=pdf_ocr_dpi, confidence=pdf_ocr_confidence)
+            pages_to_scan = candidate_pages(native_pages, analysis.report, config.max_pages)
+            trigger = "low_confidence" if analysis.confidence < max(structure_min_confidence, 0.82) else "ambiguous_structure"
+            ocr_report.update({"config": config.report(), "trigger": trigger, "candidate_pages": pages_to_scan})
+            report_ocr(
+                f"triggered: {trigger}; baseline={analysis.method} ({analysis.confidence:.2f}); "
+                f"candidate pages={','.join(str(page) for page in pages_to_scan) or 'none'}"
+            )
+            if pages_to_scan:
+                try:
+                    adapter = LocalPpOcrV5(config)
+                    results = adapter.run(source, pages_to_scan)
+                    ocr_report["processed_pages"] = sorted(results)
+                    ocr_report["failed_pages"] = {str(page): error for page, error in sorted(adapter.failures.items())}
+                    report_ocr(
+                        f"processed={len(results)}/{len(pages_to_scan)} pages; "
+                        f"failed={len(adapter.failures)}; local models only"
+                    )
+                    assisted_pages = overlay_pages(native_pages, results, minimum_confidence=config.confidence)
+                    evidence_pages = [
+                        page.number for page, assisted_page in zip(native_pages, assisted_pages)
+                        if assisted_page is not page
+                    ]
+                    ocr_report["evidence_pages"] = evidence_pages
+                    if evidence_pages:
+                        assisted = analyse_pdf(
+                            assisted_pages,
+                            source,
+                            explicit_title=title,
+                            bookmarks=[],
+                            mode=structure,
+                            min_confidence=structure_min_confidence,
+                            pages_per_chapter=pages_per_chapter,
+                            chapter_count=chapter_count,
+                            structure_manifest=None,
+                        )
+                        baseline_rank = (
+                            2 if analysis.method == "toc" else 1 if analysis.method == "headings" else 0,
+                            analysis.confidence,
+                            len(analysis.units),
+                        )
+                        assisted_rank = (
+                            2 if assisted.method == "toc" else 1 if assisted.method == "headings" else 0,
+                            assisted.confidence,
+                            len(assisted.units),
+                        )
+                        if assisted_rank > baseline_rank and assisted.method in {"toc", "headings"}:
+                            analysis = assisted
+                            ocr_report.update({
+                                "status": "used",
+                                "selected": True,
+                                "adoption": {
+                                    "baseline_method": baseline_method,
+                                    "baseline_confidence": round(baseline_confidence, 4),
+                                    "selected_method": assisted.method,
+                                    "selected_confidence": round(assisted.confidence, 4),
+                                },
+                            })
+                            report_ocr(f"adopted: {assisted.method} ({assisted.confidence:.2f}) improves native structure")
+                        else:
+                            ocr_report["status"] = "evaluated_not_selected"
+                            report_ocr(f"not adopted: {assisted.method} ({assisted.confidence:.2f}) does not improve native structure")
+                    else:
+                        ocr_report["status"] = "no_usable_evidence"
+                        report_ocr("not adopted: no new OCR lines passed confidence and deduplication")
+                except ValueError as error:
+                    ocr_report.update({"status": "unavailable", "error": str(error)})
+                    report_ocr(f"unavailable: {error}")
+    analysis.report["ocr"] = "disabled" if pdf_ocr == "off" else "pp-ocrv5-mobile-assist"
+    analysis.report["ocr_assist"] = ocr_report
     processed = postprocess_pdf_pages(native_pages, mode=postprocess)
     processed_pages = list(processed.pages)
     analysis.report["postprocess"] = processed.report
@@ -490,7 +595,8 @@ def import_pdf(
         "locator_policy": "pdf-physical-page-1-based",
         "source_processing": {
             "format": "PDF",
-            "structure_view": "native",
+            "structure_view": "native+ocr-assist" if ocr_report.get("selected") else "native",
+            "structure_ocr": ocr_report,
             "payload_view": processed.report["payload_view"],
             "steps": [processed.report],
         },

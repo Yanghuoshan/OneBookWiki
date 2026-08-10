@@ -88,7 +88,27 @@ class BookCheckerTest(unittest.TestCase):
             report = metadata.parent / "structure-report.json"
             report.write_text('{"selected_method": "ranges", "ocr": "enabled"}', encoding="utf-8")
             checked = run(CHECKER, root)
-            self.assertIn("structure report must declare OCR disabled", checked.stdout)
+            self.assertIn("structure report has invalid OCR mode", checked.stdout)
+
+    def test_pdf_ocr_assist_provenance_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.copy_example(root)
+            structure = root / "wiki" / "structure.json"
+            structure.write_text('{"pages": [], "sections": [], "sourceOutline": []}', encoding="utf-8")
+            metadata_path = root / ".onebookwiki" / "source.json"
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            assist = {
+                "mode": "assist", "role": "structure_auxiliary_only", "local_only": True,
+                "status": "used", "trigger": "low_confidence", "candidate_pages": [2],
+                "processed_pages": [2], "failed_pages": {}, "evidence_pages": [2], "selected": True,
+            }
+            metadata_path.write_text(json.dumps({"format": "PDF", "source_processing": {"structure_ocr": assist}}), encoding="utf-8")
+            (metadata_path.parent / "structure-report.json").write_text(json.dumps({
+                "selected_method": "toc", "ocr": "pp-ocrv5-mobile-assist", "ocr_assist": assist,
+            }), encoding="utf-8")
+            checked = run(CHECKER, root)
+            self.assertNotIn("OCR assist", checked.stdout)
 
     def test_pdf_manifest_snapshot_and_provenance_are_validated(self):
         with tempfile.TemporaryDirectory() as tmp:

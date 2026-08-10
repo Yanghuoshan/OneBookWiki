@@ -27,6 +27,17 @@ class PdfSlugTest(unittest.TestCase):
                 self.assertEqual(module.main(["ingest_pdf.py", str(source), str(root), "--pdf-postprocess", "strict"]), 0)
         self.assertEqual(imported.call_args.kwargs["postprocess"], "strict")
 
+    def test_pdf_ocr_options_are_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "fixture.pdf"
+            root = Path(tmp) / "fixture-project"
+            source.write_bytes(b"fixture")
+            with patch.object(module, "import_pdf", return_value=[]) as imported:
+                self.assertEqual(module.main(["ingest_pdf.py", str(source), str(root), "--pdf-ocr", "assist", "--pdf-ocr-dpi", "200", "--pdf-ocr-confidence", "0.8"]), 0)
+        self.assertEqual(imported.call_args.kwargs["pdf_ocr"], "assist")
+        self.assertEqual(imported.call_args.kwargs["pdf_ocr_dpi"], 200)
+        self.assertEqual(imported.call_args.kwargs["pdf_ocr_confidence"], 0.8)
+
     def test_structure_manifest_is_forwarded(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "fixture.pdf"
