@@ -334,7 +334,7 @@ def _toc_page_evidence(page: PdfPage) -> bool:
 
 def _toc_pages(pages: list[PdfPage], markers: Iterable[str] | None = None) -> list[PdfPage]:
     """Find the first TOC and its contiguous continuation pages."""
-    window = pages[: min(len(pages), 20)]
+    window = pages[: max(20, min(120, len(pages) // 6))]
     marker_keys = {_normalised_marker(marker) for marker in (markers or TOC_MARKERS)}
     start = next((index for index, page in enumerate(window) if any(_normalised_marker(line) in marker_keys for line in _page_lines(page))), None)
     if start is None:

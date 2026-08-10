@@ -16,8 +16,8 @@ from typing import Any, Iterable
 
 @dataclass(frozen=True)
 class PdfStructureOcrConfig:
-    detector_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_det_infer"
-    recognizer_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_rec_infer"
+    detector_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_det"
+    recognizer_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_rec"
     device: str | None = None
     batch_size: int = 1
     dpi: int = 180
@@ -98,26 +98,57 @@ class OcrPageResult:
 
 
 class LocalPpOcrV5:
-    """Small, local-only PP-OCRv5 det/rec adapter for selected PDF pages."""
+    """Small, local-only PP-OCRv5 det/rec adapter for selected PDF pages.
+
+    Uses PaddleOCR 3.x task-level APIs (`TextDetection`, `TextRecognition`)
+    with explicit local model paths.  The higher-level `PaddleOCR` pipeline
+    class is the documented entry point for most users, but the task APIs are
+    the correct choice here because we need fine-grained control: render a
+    PDF page to a pixmap, run detection to locate text regions, crop each
+    region, and then run recognition on each crop individually.
+    """
 
     def __init__(self, config: PdfStructureOcrConfig | None = None):
         self.config = config or PdfStructureOcrConfig.from_env()
         self.config.validate()
         self.failures: dict[int, str] = {}
+        # PaddlePaddle's ONEDNN backend emits a low-level C++ INFO message
+        # ("Could not find files for the given pattern(s)") during the first
+        # import.  It is written directly to the console, bypassing Python's
+        # sys.stdout/stderr, so it cannot be suppressed from Python.  The
+        # message is harmless: it refers to ONEDNN kernel-cache files, not
+        # OCR model files, and models load correctly regardless.
+        #
+        # We *do* capture Python-level stderr during the import to filter out
+        # any Python-side echoes of the same message, then re-emit the rest.
+        import sys
+        import io
+        _stderr_hold = sys.stderr
+        sys.stderr = io.StringIO()
         try:
             from paddleocr import TextDetection, TextRecognition
         except ImportError as exc:
+            sys.stderr = _stderr_hold
             raise ValueError(
                 "PP-OCRv5 assistance requires paddleocr and paddlepaddle; "
                 "install the optional pdf-ocr dependencies."
             ) from exc
+        finally:
+            _stderr_captured = sys.stderr.getvalue()
+            sys.stderr = _stderr_hold
+        for line in _stderr_captured.splitlines():
+            stripped = line.strip()
+            if stripped and "Could not find files" not in stripped:
+                print(stripped, file=sys.stderr)
+
         common: dict[str, Any] = {"enable_mkldnn": False}
         if self.config.device:
             common["device"] = self.config.device
         try:
-            # PaddleOCR 3.x's all-in-one PaddleOCR pipeline can expect legacy
-            # inference.pdmodel artifacts. The local PP-OCRv5 exports use the
-            # current inference.json format, which the task APIs load directly.
+            # PaddleOCR 3.x local models: the ``model_dir`` parameter points
+            # to a directory containing inference.json + inference.pdiparams
+            # (the PaddleX v3 format).  ``model_name`` must match the model
+            # that was exported into that directory.
             self.detector = TextDetection(
                 model_name="PP-OCRv5_mobile_det",
                 model_dir=self.config.detector_model,
@@ -224,8 +255,10 @@ def candidate_pages(pages: list[Any], report: dict[str, Any], max_pages: int) ->
     methods = {str(item.get("method")): item for item in report.get("methods", []) if isinstance(item, dict)}
     toc = methods.get("toc", {})
     # Keep the entire front window eligible, but put likely contents pages first.
+    # Scan the first 1/6 of the book, clamped to [20, 120] pages.
+    toc_window = max(20, min(120, len(pages) // 6))
     if not toc.get("accepted") or float(toc.get("confidence", 1.0) or 0.0) < 0.82:
-        for page in pages[:20]:
+        for page in pages[:toc_window]:
             lines = [str(line) for line in str(getattr(page, "text", "")).splitlines()]
             text = " ".join(lines)
             marker = any("目录" in line or "contents" in line.lower() for line in lines)
