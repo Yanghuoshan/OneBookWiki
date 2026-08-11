@@ -142,6 +142,7 @@ class GenerationConfig:
     model: str = "gpt-4o-mini"
     timeout: float = 60.0
     context_window: int | None = None
+    concurrency: int = 1
 
     @classmethod
     def from_env(cls, provider: str | None = None, model: str | None = None) -> "GenerationConfig":
@@ -154,12 +155,18 @@ class GenerationConfig:
             timeout = max(1.0, float(os.getenv("ONEBOOKWIKI_LLM_TIMEOUT", "60")))
         except ValueError:
             timeout = 60.0
+        raw_conc = os.getenv("ONEBOOKWIKI_LLM_CONCURRENCY", "1")
+        try:
+            concurrency = max(1, int(raw_conc))
+        except ValueError:
+            concurrency = 1
         return cls(
             provider=provider or os.getenv("ONEBOOKWIKI_LLM_PROVIDER", cls.provider),
             base_url=os.getenv("ONEBOOKWIKI_LLM_BASE_URL", cls.base_url),
             model=model or os.getenv("ONEBOOKWIKI_LLM_MODEL", cls.model),
             timeout=timeout,
             context_window=context_window,
+            concurrency=concurrency,
         )
 
 

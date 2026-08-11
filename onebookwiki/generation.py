@@ -1,6 +1,7 @@
 """Resumable, evidence-grounded chapter and book generation."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -39,6 +40,7 @@ class GenerationOptions:
     output_rate: float | None = None
     dry_run: bool = False
     progress: ProgressCallback | None = None
+    concurrency: int | None = None
 
 
 def _progress(options: GenerationOptions, message: str) -> None:
@@ -205,6 +207,314 @@ def _response(root: Path, prompt: str, options: GenerationOptions, store: Checkp
     raise GenerationError(message)
 
 
+async def _response_async(
+    root: Path,
+    prompt: str,
+    options: GenerationOptions,
+    store: CheckpointStore,
+    node_id: str,
+    stage: str,
+) -> GenerationResponse:
+    """Run the synchronous ``_response`` (including its retry loop) in a thread-pool worker."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _response, root, prompt, options, store, node_id, stage)
+
+
+async def _process_chapter_async(
+    number: int,
+    position: int,
+    total: int,
+    chunks: list[dict],
+    source_unit: dict,
+    title: str,
+    root: Path,
+    options: GenerationOptions,
+    store: CheckpointStore,
+    book_title: str,
+    semaphore: asyncio.Semaphore,
+) -> tuple[int, str] | None:
+    """Process one chapter under the concurrency semaphore.
+
+    Returns ``None`` on success or ``(chapter_number, error_message)`` on failure.
+    Never raises — all exceptions are caught and returned as error tuples so that
+    other in-flight chapter tasks are not affected.
+    """
+    node_id = f"chapter:{number}"
+    input_hash = digest([(c.get("chunk_id"), c.get("content_hash")) for c in chunks])
+    model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
+    artifact = root / ".onebookwiki" / "artifacts" / "chapters" / f"{number:04d}.json"
+
+    prompt = chapter_prompt(
+        number, title, chunks, options.language,
+        source_context={
+            "book_title": book_title,
+            "source_unit_id": source_unit.get("source_unit_id", ""),
+            "source_type": source_unit.get("kind", ""),
+            "breadcrumb": source_unit.get("breadcrumb", []),
+            "physical_page_start": source_unit.get("physical_page_start"),
+            "physical_page_end": source_unit.get("physical_page_end"),
+            "spine": source_unit.get("spine", ""),
+            "spine_index": source_unit.get("spine_index"),
+            "href": source_unit.get("href", ""),
+            "fragment": source_unit.get("fragment", ""),
+            "locator": dict(source_unit.get("locator") or {}),
+            "part": source_unit.get("part", 1),
+            "part_count": source_unit.get("part_count", 1),
+        },
+    )
+
+    async with semaphore:
+        _progress(options, f"chapter {position}/{total} ({number}): generating ({len(chunks)} evidence chunk(s))")
+        try:
+            response = await _response_async(root, prompt, options, store, node_id, "chapter")
+        except GenerationError as exc:
+            return (number, f"LLM exhausted retries ({exc})")
+
+    # --- JSON parse (on event-loop thread; checkpoint already marked by _response on failure) ---
+    try:
+        value = _parse_node_response(response, store, node_id, options)
+    except GenerationError as exc:
+        return (number, f"JSON parse failed ({exc})")
+
+    # --- Evidence validation ---
+    ids = _claim_ids(value)
+    valid_ids = {f"C{number}E{index}" for index in range(1, len(chunks) + 1)}
+    unknown = ids - valid_ids
+    if unknown:
+        store.mark(node_id, "failed", error=f"unknown evidence ids: {sorted(unknown)}")
+        _progress(options, f"chapter {position}/{total} ({number}): failed evidence validation")
+        return (number, f"unknown evidence ids: {sorted(unknown)}")
+
+    # --- Persist artifact ---
+    refs = _refs_for(chunks, number)
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact_metadata = {
+        "chapter": number,
+        "title": title,
+        "source_unit_id": str(source_unit.get("source_unit_id", "")),
+        "source_title": str(source_unit.get("source_title") or title),
+        "source_type": str(source_unit.get("kind", "")),
+        "breadcrumb": list(source_unit.get("breadcrumb") or []),
+        "physical_page_start": source_unit.get("physical_page_start"),
+        "physical_page_end": source_unit.get("physical_page_end"),
+        "spine": source_unit.get("spine", ""),
+        "spine_index": source_unit.get("spine_index"),
+        "href": source_unit.get("href", ""),
+        "fragment": source_unit.get("fragment", ""),
+        "locator": dict(source_unit.get("locator") or {}),
+        "structure_confidence": source_unit.get("confidence", 0.0),
+        "part": source_unit.get("part", 1),
+        "part_count": source_unit.get("part_count", 1),
+        "evidence": to_dict(refs),
+        "source_fingerprint": input_hash,
+        "generator_fingerprint": model_hash,
+    }
+    artifact.write_text(json.dumps({**value, **artifact_metadata}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    store.mark(
+        node_id, "completed",
+        input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash,
+        artifact_path=str(artifact.relative_to(root)), artifact_hash=artifact_hash,
+    )
+    _progress(options, f"chapter {position}/{total} ({number}): completed")
+    return None
+
+
+async def _generate_chapters_async(
+    root: Path,
+    options: GenerationOptions,
+    store: CheckpointStore,
+    by_chapter: dict[int, list[dict]],
+    source_units: dict[int, dict],
+    book_title: str,
+    selected_numbers: list[int],
+    effective_concurrency: int,
+) -> None:
+    """Orchestrate concurrent chapter generation with a bounded semaphore.
+
+    Raises :class:`GenerationError` if any chapter fails; successful chapters'
+    artifacts and checkpoints are preserved so that ``--resume`` only retries
+    the failed ones.
+    """
+    semaphore = asyncio.Semaphore(effective_concurrency)
+    tasks: list[asyncio.Task] = []
+
+    for position, number in enumerate(selected_numbers, 1):
+        chunks = _bounded(by_chapter[number], options.max_input_tokens)
+        if not chunks:
+            continue
+        source_unit = source_units.get(number, {})
+        title = str(source_unit.get("title") or f"Reading unit {number}")
+        raw = root / str(chunks[0].get("source_path", ""))
+        if not source_unit and raw.is_file():
+            first = raw.read_text(encoding="utf-8").splitlines()
+            if first and first[0].startswith("# "):
+                title = first[0][2:].strip() or title
+
+        # --- Reuse check (skip completed chapters on resume) ---
+        node_id = f"chapter:{number}"
+        input_hash = digest([(c.get("chunk_id"), c.get("content_hash")) for c in chunks])
+        model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
+        artifact = root / ".onebookwiki" / "artifacts" / "chapters" / f"{number:04d}.json"
+        probe_prompt = chapter_prompt(
+            number, title, chunks, options.language,
+            source_context={
+                "book_title": book_title,
+                "source_unit_id": source_unit.get("source_unit_id", ""),
+                "source_type": source_unit.get("kind", ""),
+                "breadcrumb": source_unit.get("breadcrumb", []),
+                "physical_page_start": source_unit.get("physical_page_start"),
+                "physical_page_end": source_unit.get("physical_page_end"),
+                "spine": source_unit.get("spine", ""),
+                "spine_index": source_unit.get("spine_index"),
+                "href": source_unit.get("href", ""),
+                "fragment": source_unit.get("fragment", ""),
+                "locator": dict(source_unit.get("locator") or {}),
+                "part": source_unit.get("part", 1),
+                "part_count": source_unit.get("part_count", 1),
+            },
+        )
+        if store.reusable(node_id, input_hash, digest(probe_prompt), model_hash, artifact):
+            _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): reused existing artifact")
+            continue
+
+        task = asyncio.create_task(_process_chapter_async(
+            number, position, len(selected_numbers), chunks,
+            source_unit, title, root, options, store, book_title, semaphore,
+        ))
+        tasks.append(task)
+
+    if not tasks:
+        return
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    failures: list[str] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            failures.append(f"unhandled exception: {result}")
+        elif result is not None:
+            chapter_num, msg = result
+            failures.append(f"chapter {chapter_num}: {msg}")
+
+    if failures:
+        raise GenerationError(f"{len(failures)} chapter(s) failed: {'; '.join(failures)}")
+
+
+async def _process_rollup_async(
+    group: list[dict],
+    node_id: str,
+    prompt: str,
+    input_hash: str,
+    model_hash: str,
+    artifact: Path,
+    chunks_by_chapter: dict[int, list[dict]],
+    root: Path,
+    options: GenerationOptions,
+    store: CheckpointStore,
+    semaphore: asyncio.Semaphore,
+) -> tuple[str, str] | None:
+    """Process one rollup group under the concurrency semaphore.
+
+    Returns ``None`` on success or ``(node_id, error_message)`` on failure.
+    Never raises — all exceptions are caught and returned as error tuples so that
+    other in-flight rollup tasks are not affected.
+    """
+    async with semaphore:
+        _progress(options, f"{node_id}: generating ({len(group)} chapter card(s))")
+        try:
+            response = await _response_async(root, prompt, options, store, node_id, "rollup")
+        except GenerationError as exc:
+            return (node_id, f"LLM exhausted retries ({exc})")
+
+    # --- JSON parse (on event-loop thread; checkpoint already marked by _response on failure) ---
+    try:
+        value = _parse_node_response(response, store, node_id, options)
+    except GenerationError as exc:
+        return (node_id, f"JSON parse failed ({exc})")
+
+    # --- Evidence validation ---
+    ids = _claim_ids(value)
+    valid = {
+        f"C{item['chapter']}E{index}"
+        for item in group
+        for index, _ in enumerate(_bounded(chunks_by_chapter[item["chapter"]], options.max_input_tokens), 1)
+    }
+    unknown = ids - valid
+    if unknown:
+        unknown_values = sorted(unknown)
+        store.mark(node_id, "failed", error=f"unknown evidence ids: {unknown_values}")
+        _progress(options, f"{node_id}: failed evidence validation")
+        return (node_id, f"unknown evidence ids: {unknown_values}")
+
+    # --- Persist artifact ---
+    value.update(node_id=node_id, chapters=[item["chapter"] for item in group], evidence=[])
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    store.mark(
+        node_id, "completed",
+        input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash,
+        artifact_path=str(artifact.relative_to(root)), artifact_hash=artifact_hash,
+        dependencies=[f"chapter:{item['chapter']}" for item in group],
+    )
+    _progress(options, f"{node_id}: completed")
+    return None
+
+
+async def _generate_rollups_async(
+    root: Path,
+    options: GenerationOptions,
+    store: CheckpointStore,
+    cards: list[dict],
+    chunks_by_chapter: dict[int, list[dict]],
+    effective_concurrency: int,
+) -> list[str]:
+    """Orchestrate concurrent rollup generation with a bounded semaphore.
+
+    Returns a list of failure messages (empty on full success).  Successful
+    rollups' artifacts and checkpoints are preserved so that ``--resume`` only
+    retries the failed ones.
+    """
+    semaphore = asyncio.Semaphore(effective_concurrency)
+    tasks: list[asyncio.Task] = []
+    rollup_size = max(1, options.rollup_size)
+
+    for start in range(0, len(cards), rollup_size):
+        group = cards[start : start + rollup_size]
+        node_id = f"rollup:{start + 1}-{start + len(group)}"
+        prompt = rollup_prompt(group, options.language)
+        input_hash = digest(group)
+        model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
+        artifact = root / ".onebookwiki" / "artifacts" / "rollups" / f"{start + 1:04d}-{start + len(group):04d}.json"
+
+        # --- Reuse check (skip completed rollups on resume) ---
+        if store.reusable(node_id, input_hash, digest(prompt), model_hash, artifact):
+            _progress(options, f"{node_id}: reused existing artifact")
+            continue
+
+        task = asyncio.create_task(_process_rollup_async(
+            group, node_id, prompt, input_hash, model_hash, artifact,
+            chunks_by_chapter, root, options, store, semaphore,
+        ))
+        tasks.append(task)
+
+    if not tasks:
+        return []
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    failures: list[str] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            failures.append(f"unhandled exception: {result}")
+        elif result is not None:
+            node_id, msg = result
+            failures.append(f"{node_id}: {msg}")
+
+    return failures
+
+
 def _parse_node_response(response: GenerationResponse, store: CheckpointStore, node_id: str, options: GenerationOptions) -> dict[str, Any]:
     try:
         value, repaired, strict_error = _parse_json_response(response.text)
@@ -309,78 +619,89 @@ def generate_chapters(root: Path, options: GenerationOptions | None = None, chap
         store.save()
         _progress(options, f"generation plan: {len(selected_numbers)} chapter node(s) pending")
         return store
-    _progress(options, f"chapter generation: {len(selected_numbers)} chapter(s) selected")
+    # --- Resolve concurrency ---
+    effective_concurrency = options.concurrency
+    if effective_concurrency is None or effective_concurrency < 1:
+        from .providers import GenerationConfig
+        effective_concurrency = max(1, GenerationConfig.from_env().concurrency)
+    _progress(options, f"chapter generation: {len(selected_numbers)} chapter(s) selected (concurrency={effective_concurrency})")
     with project_lock(root):
-        for position, number in enumerate(selected_numbers, 1):
-            chunks = _bounded(by_chapter[number], options.max_input_tokens)
-            if not chunks:
-                continue
-            source_unit = source_units.get(number, {})
-            title = str(source_unit.get("title") or f"Reading unit {number}")
-            raw = root / str(chunks[0].get("source_path", ""))
-            if not source_unit and raw.is_file():
-                first = raw.read_text(encoding="utf-8").splitlines()
-                if first and first[0].startswith("# "):
-                    title = first[0][2:].strip() or title
-            prompt = chapter_prompt(number, title, chunks, options.language, source_context={
-                "book_title": book_title,
-                "source_unit_id": source_unit.get("source_unit_id", ""),
-                "source_type": source_unit.get("kind", ""),
-                "breadcrumb": source_unit.get("breadcrumb", []),
-                "physical_page_start": source_unit.get("physical_page_start"),
-                "physical_page_end": source_unit.get("physical_page_end"),
-                "spine": source_unit.get("spine", ""),
-                "spine_index": source_unit.get("spine_index"),
-                "href": source_unit.get("href", ""),
-                "fragment": source_unit.get("fragment", ""),
-                "locator": dict(source_unit.get("locator") or {}),
-                "part": source_unit.get("part", 1),
-                "part_count": source_unit.get("part_count", 1),
-            })
-            node_id = f"chapter:{number}"
-            input_hash = digest([(c.get("chunk_id"), c.get("content_hash")) for c in chunks])
-            model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
-            artifact = root / ".onebookwiki" / "artifacts" / "chapters" / f"{number:04d}.json"
-            if store.reusable(node_id, input_hash, digest(prompt), model_hash, artifact):
-                _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): reused existing artifact")
-                continue
-            _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): generating ({len(chunks)} evidence chunk(s))")
-            response = _response(root, prompt, options, store, node_id, "chapter")
-            value = _parse_node_response(response, store, node_id, options)
-            ids = _claim_ids(value)
-            valid_ids = {f"C{number}E{index}" for index in range(1, len(chunks) + 1)}
-            unknown = ids - valid_ids
-            if unknown:
-                store.mark(node_id, "failed", error=f"unknown evidence ids: {sorted(unknown)}")
-                _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): failed evidence validation")
-                raise GenerationError(f"chapter {number} contains unknown evidence ids: {sorted(unknown)}")
-            refs = _refs_for(chunks, number)
-            artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact_metadata = {
-                "chapter": number,
-                "title": title,
-                "source_unit_id": str(source_unit.get("source_unit_id", "")),
-                "source_title": str(source_unit.get("source_title") or title),
-                "source_type": str(source_unit.get("kind", "")),
-                "breadcrumb": list(source_unit.get("breadcrumb") or []),
-                "physical_page_start": source_unit.get("physical_page_start"),
-                "physical_page_end": source_unit.get("physical_page_end"),
-                "spine": source_unit.get("spine", ""),
-                "spine_index": source_unit.get("spine_index"),
-                "href": source_unit.get("href", ""),
-                "fragment": source_unit.get("fragment", ""),
-                "locator": dict(source_unit.get("locator") or {}),
-                "structure_confidence": source_unit.get("confidence", 0.0),
-                "part": source_unit.get("part", 1),
-                "part_count": source_unit.get("part_count", 1),
-                "evidence": to_dict(refs),
-                "source_fingerprint": input_hash,
-                "generator_fingerprint": model_hash,
-            }
-            artifact.write_text(json.dumps({**value, **artifact_metadata}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
-            store.mark(node_id, "completed", input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash, artifact_path=str(artifact.relative_to(root)), artifact_hash=artifact_hash)
-            _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): completed")
+        if effective_concurrency > 1 and len(selected_numbers) > 1:
+            asyncio.run(_generate_chapters_async(
+                root, options, store, by_chapter, source_units,
+                book_title, selected_numbers, effective_concurrency,
+            ))
+        else:
+            for position, number in enumerate(selected_numbers, 1):
+                chunks = _bounded(by_chapter[number], options.max_input_tokens)
+                if not chunks:
+                    continue
+                source_unit = source_units.get(number, {})
+                title = str(source_unit.get("title") or f"Reading unit {number}")
+                raw = root / str(chunks[0].get("source_path", ""))
+                if not source_unit and raw.is_file():
+                    first = raw.read_text(encoding="utf-8").splitlines()
+                    if first and first[0].startswith("# "):
+                        title = first[0][2:].strip() or title
+                prompt = chapter_prompt(number, title, chunks, options.language, source_context={
+                    "book_title": book_title,
+                    "source_unit_id": source_unit.get("source_unit_id", ""),
+                    "source_type": source_unit.get("kind", ""),
+                    "breadcrumb": source_unit.get("breadcrumb", []),
+                    "physical_page_start": source_unit.get("physical_page_start"),
+                    "physical_page_end": source_unit.get("physical_page_end"),
+                    "spine": source_unit.get("spine", ""),
+                    "spine_index": source_unit.get("spine_index"),
+                    "href": source_unit.get("href", ""),
+                    "fragment": source_unit.get("fragment", ""),
+                    "locator": dict(source_unit.get("locator") or {}),
+                    "part": source_unit.get("part", 1),
+                    "part_count": source_unit.get("part_count", 1),
+                })
+                node_id = f"chapter:{number}"
+                input_hash = digest([(c.get("chunk_id"), c.get("content_hash")) for c in chunks])
+                model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
+                artifact = root / ".onebookwiki" / "artifacts" / "chapters" / f"{number:04d}.json"
+                if store.reusable(node_id, input_hash, digest(prompt), model_hash, artifact):
+                    _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): reused existing artifact")
+                    continue
+                _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): generating ({len(chunks)} evidence chunk(s))")
+                response = _response(root, prompt, options, store, node_id, "chapter")
+                value = _parse_node_response(response, store, node_id, options)
+                ids = _claim_ids(value)
+                valid_ids = {f"C{number}E{index}" for index in range(1, len(chunks) + 1)}
+                unknown = ids - valid_ids
+                if unknown:
+                    store.mark(node_id, "failed", error=f"unknown evidence ids: {sorted(unknown)}")
+                    _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): failed evidence validation")
+                    raise GenerationError(f"chapter {number} contains unknown evidence ids: {sorted(unknown)}")
+                refs = _refs_for(chunks, number)
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact_metadata = {
+                    "chapter": number,
+                    "title": title,
+                    "source_unit_id": str(source_unit.get("source_unit_id", "")),
+                    "source_title": str(source_unit.get("source_title") or title),
+                    "source_type": str(source_unit.get("kind", "")),
+                    "breadcrumb": list(source_unit.get("breadcrumb") or []),
+                    "physical_page_start": source_unit.get("physical_page_start"),
+                    "physical_page_end": source_unit.get("physical_page_end"),
+                    "spine": source_unit.get("spine", ""),
+                    "spine_index": source_unit.get("spine_index"),
+                    "href": source_unit.get("href", ""),
+                    "fragment": source_unit.get("fragment", ""),
+                    "locator": dict(source_unit.get("locator") or {}),
+                    "structure_confidence": source_unit.get("confidence", 0.0),
+                    "part": source_unit.get("part", 1),
+                    "part_count": source_unit.get("part_count", 1),
+                    "evidence": to_dict(refs),
+                    "source_fingerprint": input_hash,
+                    "generator_fingerprint": model_hash,
+                }
+                artifact.write_text(json.dumps({**value, **artifact_metadata}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                artifact_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                store.mark(node_id, "completed", input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash, artifact_path=str(artifact.relative_to(root)), artifact_hash=artifact_hash)
+                _progress(options, f"chapter {position}/{len(selected_numbers)} ({number}): completed")
     return store
 
 
@@ -440,40 +761,59 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
         raise GenerationError("no chapter artifacts; generate chapters first")
     cards = [{"chapter": item.chapter, "title": item.title, "summary": item.executive_summary, "thesis": item.core_thesis, "claims": to_dict(item.claims)} for item in chapters]
     chunks_by_chapter = _chunks_by_chapter(root)
+    # --- Resolve concurrency ---
+    effective_concurrency = options.concurrency
+    if effective_concurrency is None or effective_concurrency < 1:
+        from .providers import GenerationConfig
+        effective_concurrency = max(1, GenerationConfig.from_env().concurrency)
+    rollup_size = max(1, options.rollup_size)
+    rollup_groups = list(range(0, len(cards), rollup_size))
+    use_async = not options.dry_run and effective_concurrency > 1 and len(rollup_groups) > 1
+    if use_async:
+        _progress(options, f"rollup generation: {len(rollup_groups)} group(s) (concurrency={effective_concurrency})")
+        failures = asyncio.run(_generate_rollups_async(
+            root, options, store, cards, chunks_by_chapter, effective_concurrency,
+        ))
+        if failures:
+            raise GenerationError(f"{len(failures)} rollup(s) failed: {'; '.join(failures)}")
+    else:
+        for start in rollup_groups:
+            group = cards[start : start + rollup_size]
+            node_id = f"rollup:{start + 1}-{start + len(group)}"
+            prompt = rollup_prompt(group, options.language)
+            input_hash = digest(group)
+            model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
+            artifact = root / ".onebookwiki" / "artifacts" / "rollups" / f"{start + 1:04d}-{start + len(group):04d}.json"
+            if not options.dry_run:
+                if not store.reusable(node_id, input_hash, digest(prompt), model_hash, artifact):
+                    _progress(options, f"{node_id}: generating ({len(group)} chapter card(s))")
+                    response = _response(root, prompt, options, store, node_id, "rollup")
+                    value = _parse_node_response(response, store, node_id, options)
+                    ids = _claim_ids(value)
+                    valid = {
+                        f"C{item['chapter']}E{index}"
+                        for item in group
+                        for index, _ in enumerate(_bounded(chunks_by_chapter[item["chapter"]], options.max_input_tokens), 1)
+                    }
+                    unknown = ids - valid
+                    if unknown:
+                        unknown_values = sorted(unknown)
+                        store.mark(node_id, "failed", error=f"unknown evidence ids: {unknown_values}")
+                        _progress(options, f"{node_id}: failed evidence validation")
+                        raise GenerationError(f"rollup contains unknown evidence ids: {unknown_values}; allowed ids include {sorted(valid)[:12]}")
+                    value.update(node_id=node_id, chapters=[item["chapter"] for item in group], evidence=[])
+                    artifact.parent.mkdir(parents=True, exist_ok=True)
+                    artifact.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                    store.mark(node_id, "completed", input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash, artifact_path=str(artifact.relative_to(root)), artifact_hash=hashlib.sha256(artifact.read_bytes()).hexdigest(), dependencies=[f"chapter:{item['chapter']}" for item in group])
+                    _progress(options, f"{node_id}: completed")
+                else:
+                    _progress(options, f"{node_id}: reused existing artifact")
+            elif not store.node(node_id).get("status"):
+                store.node(node_id).update(status="pending", input_tokens=count_tokens(prompt))
     rollups: list[Rollup] = []
-    for start in range(0, len(cards), max(1, options.rollup_size)):
-        group = cards[start : start + max(1, options.rollup_size)]
-        node_id = f"rollup:{start + 1}-{start + len(group)}"
-        prompt = rollup_prompt(group, options.language)
-        input_hash = digest(group)
-        model_hash = digest({"provider": options.provider, "model": options.model, "language": options.language, "version": 1})
-        artifact = root / ".onebookwiki" / "artifacts" / "rollups" / f"{start + 1:04d}-{start + len(group):04d}.json"
-        if not options.dry_run:
-            if not store.reusable(node_id, input_hash, digest(prompt), model_hash, artifact):
-                _progress(options, f"{node_id}: generating ({len(group)} chapter card(s))")
-                response = _response(root, prompt, options, store, node_id, "rollup")
-                value = _parse_node_response(response, store, node_id, options)
-                ids = _claim_ids(value)
-                valid = {
-                    f"C{item['chapter']}E{index}"
-                    for item in group
-                    for index, _ in enumerate(_bounded(chunks_by_chapter[item["chapter"]], options.max_input_tokens), 1)
-                }
-                unknown = ids - valid
-                if unknown:
-                    unknown_values = sorted(unknown)
-                    store.mark(node_id, "failed", error=f"unknown evidence ids: {unknown_values}")
-                    _progress(options, f"{node_id}: failed evidence validation")
-                    raise GenerationError(f"rollup contains unknown evidence ids: {unknown_values}; allowed ids include {sorted(valid)[:12]}")
-                value.update(node_id=node_id, chapters=[item["chapter"] for item in group], evidence=[])
-                artifact.parent.mkdir(parents=True, exist_ok=True)
-                artifact.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-                store.mark(node_id, "completed", input_hash=input_hash, prompt_hash=digest(prompt), model_hash=model_hash, artifact_path=str(artifact.relative_to(root)), artifact_hash=hashlib.sha256(artifact.read_bytes()).hexdigest(), dependencies=[f"chapter:{item['chapter']}" for item in group])
-                _progress(options, f"{node_id}: completed")
-            else:
-                _progress(options, f"{node_id}: reused existing artifact")
-        elif not store.node(node_id).get("status"):
-            store.node(node_id).update(status="pending", input_tokens=count_tokens(prompt))
+    for start in rollup_groups:
+        end = min(start + rollup_size, len(cards))
+        artifact = root / ".onebookwiki" / "artifacts" / "rollups" / f"{start + 1:04d}-{end:04d}.json"
         if artifact.is_file():
             rollups.append(rollup_from_dict(json.loads(artifact.read_text(encoding="utf-8"))))
     title = _book_title(root)

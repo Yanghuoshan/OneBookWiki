@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,7 @@ class CheckpointStore:
         self.run_id = run_id or uuid.uuid4().hex[:12]
         self.path = self.directory / f"run-{self.run_id}.json"
         self.data = self._load() or {"run_id": self.run_id, "status": "pending", "nodes": {}}
+        self._lock = threading.Lock()
 
     def _load(self) -> dict:
         if not self.path.is_file():
@@ -33,7 +35,8 @@ class CheckpointStore:
         except (OSError, ValueError):
             return {}
 
-    def save(self) -> None:
+    def _save_unlocked(self) -> None:
+        """Persist current state to disk. Caller must hold ``self._lock``."""
         self.directory.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -43,8 +46,13 @@ class CheckpointStore:
         latest_tmp.write_text(json.dumps({"run_id": self.run_id}, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(latest_tmp, latest)
 
+    def save(self) -> None:
+        with self._lock:
+            self._save_unlocked()
+
     def node(self, node_id: str) -> dict:
-        return self.data.setdefault("nodes", {}).setdefault(node_id, {"node_id": node_id, "status": "pending", "attempts": 0})
+        with self._lock:
+            return self.data.setdefault("nodes", {}).setdefault(node_id, {"node_id": node_id, "status": "pending", "attempts": 0})
 
     def reusable(self, node_id: str, input_hash: str, prompt_hash: str, model_hash: str, artifact_path: Path | None = None, artifact_hash: str | None = None) -> bool:
         node = self.data.get("nodes", {}).get(node_id, {})
@@ -59,13 +67,14 @@ class CheckpointStore:
         return True
 
     def mark(self, node_id: str, status: str, **values: object) -> dict:
-        node = self.node(node_id)
-        node.update(status=status, **values)
-        if status == "running":
-            node["attempts"] = int(node.get("attempts", 0)) + 1
-        self.data["status"] = status if status in {"failed", "completed"} else "running"
-        self.save()
-        return node
+        with self._lock:
+            node = self.data.setdefault("nodes", {}).setdefault(node_id, {"node_id": node_id, "status": "pending", "attempts": 0})
+            node.update(status=status, **values)
+            if status == "running":
+                node["attempts"] = int(node.get("attempts", 0)) + 1
+            self.data["status"] = status if status in {"failed", "completed"} else "running"
+            self._save_unlocked()
+            return node
 
     def invalidate_downstream(self, changed: set[str]) -> None:
         nodes = self.data.get("nodes", {})

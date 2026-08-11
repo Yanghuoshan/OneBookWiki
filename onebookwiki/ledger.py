@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,17 @@ from typing import Any
 
 def prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+_usage_file_locks: dict[Path, threading.Lock] = {}
+_usage_lock_registry_lock = threading.Lock()
+
+
+def _get_usage_lock(target: Path) -> threading.Lock:
+    with _usage_lock_registry_lock:
+        if target not in _usage_file_locks:
+            _usage_file_locks[target] = threading.Lock()
+        return _usage_file_locks[target]
 
 
 def _rate(value: float | None, env_name: str) -> float | None:
@@ -60,8 +72,10 @@ def append_usage(root: Path, *, run_id: str, node_id: str, stage: str, attempt: 
         record["error_detail"] = " ".join(str(error_detail).split())[:1000]
     target = root / ".onebookwiki" / "usage.jsonl"
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+    lock = _get_usage_lock(target)
+    with lock:
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
     return record
 
 

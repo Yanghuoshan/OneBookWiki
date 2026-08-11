@@ -21,9 +21,9 @@ class ChunkingTest(unittest.TestCase):
             {
                 "revision": "smaller-v1",
                 "language": "cjk",
-                "target_tokens": 400,
-                "overlap_tokens": 60,
-                "max_tokens": 520,
+                "target_tokens": 150,
+                "overlap_tokens": 25,
+                "max_tokens": 200,
             },
         )
         self.assertEqual(
@@ -31,9 +31,9 @@ class ChunkingTest(unittest.TestCase):
             {
                 "revision": "smaller-v1",
                 "language": "latin",
-                "target_tokens": 500,
-                "overlap_tokens": 75,
-                "max_tokens": 650,
+                "target_tokens": 200,
+                "overlap_tokens": 30,
+                "max_tokens": 250,
             },
         )
 

@@ -164,8 +164,8 @@ def chunk_text(
     text: str,
     source_path: str,
     chapter: int,
-    target_words: int = 700,
-    overlap_words: int = 100,
+    target_words: int = 263,
+    overlap_words: int = 38,
     *,
     target_tokens: int | None = None,
     overlap_tokens: int | None = None,
@@ -174,13 +174,13 @@ def chunk_text(
     """Split prose by language-aware boundaries with a hard token ceiling.
 
     ``target_words`` and ``overlap_words`` remain for compatibility. Explicit
-    token arguments take precedence; CJK defaults are 600/80/800 and Latin
-    defaults are 700/100/900.
+    token arguments take precedence; CJK defaults are 225/30/300 and Latin
+    defaults are 263/38/338.
     """
     cjk = contains_cjk(text)
-    target = target_tokens if target_tokens is not None else (600 if cjk else target_words)
-    overlap = overlap_tokens if overlap_tokens is not None else (80 if cjk else overlap_words)
-    maximum = max_tokens if max_tokens is not None else (800 if cjk else max(900, target + overlap))
+    target = target_tokens if target_tokens is not None else (225 if cjk else target_words)
+    overlap = overlap_tokens if overlap_tokens is not None else (30 if cjk else overlap_words)
+    maximum = max_tokens if max_tokens is not None else (300 if cjk else max(338, target + overlap))
     target = max(1, min(target, maximum))
     overlap = max(0, min(overlap, target // 2))
 

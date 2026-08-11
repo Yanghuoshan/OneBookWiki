@@ -11,8 +11,8 @@ CJK_RE = re.compile(r"[⺀-⿿　-〿㐀-䶿一-鿿豈-﫿]")
 SENTENCE_RE = re.compile(r"(?<=[。！？；!?;])\s*|\n+")
 SOFT_BREAK_RE = re.compile(r"(?<=[，、：,:])\s*|\s+")
 CHUNK_PROFILE_REVISION = "smaller-v1"
-_CJK_DEFAULTS = (400, 60, 520)
-_LATIN_DEFAULTS = (500, 75, 650)
+_CJK_DEFAULTS = (150, 25, 200)
+_LATIN_DEFAULTS = (200, 30, 250)
 
 
 @dataclass(frozen=True)
@@ -294,8 +294,8 @@ def chunk_text(
 ) -> list[Chunk]:
     """Split prose by language-aware boundaries with a hard token ceiling.
 
-    Explicit token arguments take precedence. The defaults are 400/60/520 for
-    CJK documents and 500/75/650 for Latin documents.
+    Explicit token arguments take precedence. The defaults are 150/25/200 for
+    CJK documents and 200/30/250 for Latin documents.
     """
     profile = chunking_profile(
         text,
