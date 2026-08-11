@@ -39,6 +39,29 @@ def display_label(ref: EvidenceRef) -> str:
         if href:
             label += f" · {href}{('#' + fragment) if fragment else ''}"
         return label
+    if source_format == "TXT":
+        start = locator.get("line_start")
+        end = locator.get("line_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            return f"TXT line {start}" if start == end else f"TXT lines {start}-{end}"
+    if source_format in {"DOC", "DOCX"}:
+        start = locator.get("paragraph_start")
+        end = locator.get("paragraph_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            prefix = source_format
+            return f"{prefix} paragraph {start}" if start == end else f"{prefix} paragraphs {start}-{end}"
+    if source_format == "HTML":
+        href = str(locator.get("href", ""))
+        fragment = str(locator.get("fragment", ""))
+        if href or fragment:
+            return f"HTML {href or 'document'}{('#' + fragment) if fragment else ''}"
+        start = locator.get("block_start")
+        end = locator.get("block_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            return f"HTML block {start}" if start == end else f"HTML blocks {start}-{end}"
+    if source_format in {"MOBI", "AZW", "AZW3"}:
+        section = locator.get("section")
+        return f"{source_format} section {section}" if section else f"{source_format} Ch. {locator.get('chapter', ref.chapter)}"
     return f"Chapter {ref.chapter} · lines {ref.start_line}-{ref.end_line}"
 
 

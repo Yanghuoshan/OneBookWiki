@@ -3,29 +3,40 @@ from __future__ import annotations
 
 import hashlib
 import html
+import importlib
 import json
 import posixpath
 import re
+import shutil
 import sys
 import unicodedata
 import zipfile
+from dataclasses import replace
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from .chunking import count_tokens
 from .source_structure import (
     DEFAULT_MAX_UNIT_TOKENS,
     PageBlock,
     PdfLine,
     PdfPage,
     PdfSpan,
+    ImportOptions,
+    ImportedSourceDocument,
+    ImportedSourceNode,
+    ImportedSourceUnit,
+    SourceLocator,
+    SourceNode,
+    SourceUnit,
     _kind,
     analyse_pdf,
-    reading_part_dict,
-    source_node_dict,
+    imported_source_node_dict,
     split_unit_into_parts,
+    validate_imported_source_document,
 )
 from .pdf_manifest import load_manifest
 from .pdf_postprocess import postprocess_pdf_pages
@@ -539,199 +550,1142 @@ def import_pdf(
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(analysis.report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    written: list[Path] = []
-    reading_units: list[dict[str, Any]] = []
-    chapter = 1
+    parts: list[tuple[SourceUnit, Any]] = []
     for unit in analysis.units:
-        for part in split_unit_into_parts(unit, processed_pages, max_unit_tokens):
-            fallback = f"unit-{chapter:02d}"
-            filename = f"{chapter:02d}-{slugify(part.title, fallback)}.md"
-            target = output / filename
-            raw_path = target.relative_to(root).as_posix()
-            if not target.exists() or force:
-                grouped: dict[int, list[str]] = {}
-                for page_number, fragment in part.page_fragments:
-                    grouped.setdefault(page_number, []).append(fragment)
-                page_blocks = [
-                    f"## Page {page_number}\n\n{page_text}"
-                    for page_number, fragments in grouped.items()
-                    if (page_text := "\n\n".join(fragments).strip())
-                ]
-                body = "\n\n".join(page_blocks)
-                breadcrumb = " › ".join(part.breadcrumb)
-                target.write_text(
-                    f"# {part.title}\n\n"
-                    f"> Book: {book_title}\n> Chapter: {chapter}\n> Source Unit: {part.source_unit_id}\n"
-                    f"> Breadcrumb: {breadcrumb}\n> Type: {part.kind}\n> Confidence: {part.confidence:.2f}\n"
-                    f"> Part: {part.part}/{part.part_count}\n> Pages: {part.physical_page_start}-{part.physical_page_end}\n"
-                    f"> Source: {source.name}\n> Collected: {date.today().isoformat()}\n> Format: PDF\n\n{body}\n",
-                    encoding="utf-8",
-                )
-            written.append(target)
-            reading_units.append(reading_part_dict(part, chapter, raw_path))
-            chapter += 1
+        parts.extend((unit, part) for part in split_unit_into_parts(unit, processed_pages, max_unit_tokens))
+    part_ids: dict[str, list[str]] = {}
+    neutral_units: list[ImportedSourceUnit] = []
+    for original, part in parts:
+        part_id = original.id if part.part_count == 1 else f"{original.id}-part-{part.part:02d}"
+        part_ids.setdefault(original.id, []).append(part_id)
+        grouped: dict[int, list[str]] = {}
+        for page_number, fragment in part.page_fragments:
+            grouped.setdefault(page_number, []).append(fragment)
+        page_blocks = [
+            f"## Page {page_number}\n\n{page_text}"
+            for page_number, fragments in grouped.items()
+            if (page_text := "\n\n".join(fragments).strip())
+        ]
+        locator = SourceLocator("PDF", "pdf_pages", {
+            "physical_page_start": part.physical_page_start,
+            "physical_page_end": part.physical_page_end,
+        })
+        neutral_units.append(ImportedSourceUnit(
+            id=part_id,
+            title=part.title,
+            text="\n\n".join(page_blocks).strip(),
+            locator=locator,
+            kind=part.kind,
+            breadcrumb=part.breadcrumb,
+            confidence=part.confidence,
+            source_title=original.title,
+            part=part.part,
+            part_count=part.part_count,
+        ))
 
-    by_source: dict[str, list[str]] = {}
-    for record in reading_units:
-        by_source.setdefault(str(record["source_unit_id"]), []).append(f"chapter-{int(record['chapter']):02d}")
-    def outline_pages(node: dict[str, Any]) -> dict[str, Any]:
-        value = dict(node)
-        value["pageIds"] = [page_id for unit_id in value.pop("unitIds", []) for page_id in by_source.get(unit_id, [])]
-        value["children"] = [outline_pages(child) for child in value.get("children", [])]
-        return value
+    def neutral_node(node: SourceNode) -> ImportedSourceNode:
+        return ImportedSourceNode(
+            id=node.id,
+            title=node.title,
+            kind=node.kind,
+            breadcrumb=node.breadcrumb,
+            confidence=node.confidence,
+            unit_ids=[part_id for unit_id in node.unit_ids for part_id in part_ids.get(unit_id, [])],
+            children=[neutral_node(child) for child in node.children],
+        )
 
-    outline = [outline_pages(source_node_dict(node)) for node in analysis.outline]
-    write_source_metadata(root, {
-        "schema_version": 3,
-        "title": book_title,
-        "title_method": analysis.title.method,
-        "title_confidence": analysis.title.confidence,
-        "format": "PDF",
-        "source_name": source.name,
-        "source_hash": source_hash,
-        "page_count": len(native_pages),
-        "pages_per_chapter": pages_per_chapter,
-        "chapter_count": chapter_count,
-        "locator_policy": "pdf-physical-page-1-based",
-        "source_processing": {
+    document = ImportedSourceDocument(
+        format="PDF",
+        source_name=source.name,
+        source_hash=source_hash,
+        title=book_title,
+        title_method=analysis.title.method,
+        title_confidence=analysis.title.confidence,
+        units=neutral_units,
+        outline=[neutral_node(node) for node in analysis.outline],
+        metadata={
+            "structure_method": analysis.method,
+            "structure_confidence": analysis.confidence,
+            "_source_metadata_extra": {
+                "page_count": len(native_pages),
+                "pages_per_chapter": pages_per_chapter,
+                "chapter_count": chapter_count,
+            },
+            "_source_structure_extra": {
+                "report_path": report_path.relative_to(root).as_posix() if report_path.is_relative_to(root) else str(report_path),
+                **({"structure_manifest": manifest_metadata} if manifest_metadata is not None else {}),
+            },
+        },
+        processing={
             "format": "PDF",
             "structure_view": "native+ocr-assist" if ocr_report.get("selected") else "native",
             "structure_ocr": ocr_report,
             "payload_view": processed.report["payload_view"],
             "steps": [processed.report],
         },
-        "source_structure": {
-            "method": analysis.method,
-            "confidence": analysis.confidence,
-            "outline": outline,
-            "units": reading_units,
-            "report_path": report_path.relative_to(root).as_posix() if report_path.is_relative_to(root) else str(report_path),
-            **({"structure_manifest": manifest_metadata} if manifest_metadata is not None else {}),
-        },
-        "chapters": reading_units,
-    })
-    return written
+        locator_policy="pdf-physical-page-1-based",
+    )
+    return write_import(document, root, ImportOptions(
+        title=title,
+        force=force,
+        max_unit_tokens=max_unit_tokens,
+    ))
 
 
-def import_epub(source: Path, root: Path, title: str | None = None, force: bool = False, keep_front_matter: bool = False) -> list[Path]:
-    """Import EPUB spine entries using the same semantic unit protocol as PDFs."""
-    parsed = parse_epub(source, keep_front_matter=keep_front_matter)
-    metadata = parsed["metadata"]
-    metadata_title = " ".join(str(metadata.get("title", "")).split())
-    explicit_title = " ".join(title.split()) if title else ""
-    book_title = explicit_title or metadata_title or source.stem.replace("_", " ")
-    title_method = "explicit" if explicit_title else "epub_metadata" if metadata_title else "filename"
-    title_confidence = 1.0 if title_method == "explicit" else 0.98 if title_method == "epub_metadata" else 0.35
-    if force:
+
+# ---------------------------------------------------------------------------
+# Format-neutral import contract
+# ---------------------------------------------------------------------------
+
+SUPPORTED_SOURCE_SUFFIXES = {
+    ".pdf": "PDF",
+    ".epub": "EPUB",
+    ".mobi": "MOBI",
+    ".azw": "AZW",
+    ".azw3": "AZW3",
+    ".txt": "TXT",
+    ".doc": "DOC",
+    ".docx": "DOCX",
+    ".html": "HTML",
+    ".htm": "HTML",
+}
+
+
+def detect_source_type(source: Path, override: str | None = None) -> str:
+    """Return a supported input format without transforming its contents."""
+    if override:
+        value = override.strip().upper()
+        if value in set(SUPPORTED_SOURCE_SUFFIXES.values()):
+            return value
+        raise ValueError(f"unsupported source type override: {override!r}")
+    try:
+        return SUPPORTED_SOURCE_SUFFIXES[source.suffix.lower()]
+    except KeyError as exc:
+        suffixes = ", ".join(sorted(SUPPORTED_SOURCE_SUFFIXES))
+        raise ValueError(f"unsupported source format {source.suffix or '(no suffix)'}; supported suffixes: {suffixes}") from exc
+
+
+def _stable_source_id(prefix: str, identity: str) -> str:
+    return f"{prefix.lower()}-{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _clean_source_text(value: str) -> str:
+    return "\n".join(line.rstrip() for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip()
+
+
+def _split_text(value: str, budget: int) -> list[str]:
+    """Split extracted prose at natural boundaries without dropping characters."""
+    if count_tokens(value) <= budget:
+        return [value]
+    pieces = [part.strip() for part in re.split(r"\n\s*\n", value) if part.strip()]
+    if len(pieces) <= 1:
+        pieces = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", value) if part.strip()]
+    result: list[str] = []
+    pending = ""
+    for piece in pieces:
+        proposal = f"{pending}\n\n{piece}".strip() if pending else piece
+        if pending and count_tokens(proposal) > budget:
+            result.append(pending)
+            pending = piece
+        else:
+            pending = proposal
+        while pending and count_tokens(pending) > budget:
+            low, high, best = 1, len(pending), 1
+            while low <= high:
+                middle = (low + high) // 2
+                if count_tokens(pending[:middle]) <= budget:
+                    best = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            result.append(pending[:best].strip())
+            pending = pending[best:].strip()
+    if pending:
+        result.append(pending)
+    return result
+
+
+def _filename_title(source: Path) -> str:
+    return " ".join(source.stem.replace("_", " ").replace("-", " ").split()) or "Untitled book"
+
+
+def _source_outline(units: list[ImportedSourceUnit]) -> list[ImportedSourceNode]:
+    return [
+        ImportedSourceNode(
+            id=f"outline-{unit.id}", title=unit.title, kind=unit.kind,
+            breadcrumb=unit.breadcrumb or (unit.title,), confidence=unit.confidence,
+            unit_ids=[unit.id],
+        )
+        for unit in units
+    ]
+
+
+def _split_imported_units(
+    document: ImportedSourceDocument,
+    max_unit_tokens: int,
+) -> ImportedSourceDocument:
+    """Bound non-PDF reading units without losing text or source provenance."""
+    if max_unit_tokens < 256:
+        raise ValueError("max_unit_tokens must be at least 256")
+    if document.format.upper() == "PDF":
+        return document
+    budget = max(128, int(max_unit_tokens * 0.70))
+    split: list[ImportedSourceUnit] = []
+    part_ids_by_unit: dict[str, list[str]] = {}
+    changed = False
+    for unit in document.units:
+        if count_tokens(unit.text) <= budget:
+            split.append(unit)
+            part_ids_by_unit[unit.id] = [unit.id]
+            continue
+        changed = True
+        parts = _split_text(unit.text, budget)
+        part_count = len(parts)
+        part_ids: list[str] = []
+        for index, text in enumerate(parts, 1):
+            title = unit.title if part_count == 1 else f"{unit.title} (Part {index})"
+            identity = json.dumps(
+                {"unit": unit.id, "part": index, "locator": unit.locator.to_dict()},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            part_id = _stable_source_id(document.format, identity)
+            part_ids.append(part_id)
+            split.append(replace(
+                unit,
+                id=part_id,
+                title=title,
+                text=text,
+                part=index,
+                part_count=part_count,
+                metadata={**unit.metadata, "split_from": unit.id},
+            ))
+        part_ids_by_unit[unit.id] = part_ids
+    if not changed:
+        return document
+
+    def rewrite_node(node: ImportedSourceNode) -> ImportedSourceNode:
+        return replace(
+            node,
+            unit_ids=[
+                part_id
+                for unit_id in node.unit_ids
+                for part_id in part_ids_by_unit.get(unit_id, [unit_id])
+            ],
+            children=[rewrite_node(child) for child in node.children],
+        )
+
+    return replace(document, units=split, outline=[rewrite_node(node) for node in document.outline])
+
+
+def _legacy_locator_fields(locator: dict[str, Any]) -> dict[str, Any]:
+    source_format = str(locator.get("format", "")).upper()
+    if source_format == "PDF":
+        return {key: locator[key] for key in ("physical_page_start", "physical_page_end") if locator.get(key) is not None}
+    if source_format == "EPUB":
+        mapping = {"spine_id": "spine", "spine_index": "spine_index", "href": "href", "fragment": "fragment"}
+        return {target: locator[source] for source, target in mapping.items() if locator.get(source) not in (None, "")}
+    return {}
+
+
+def _raw_locator_lines(locator: dict[str, Any]) -> list[str]:
+    source_format = str(locator.get("format", "")).upper()
+    result = [f"> Locator: {json.dumps(locator, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"]
+    if source_format == "PDF" and locator.get("physical_page_start") is not None:
+        result.append(f"> Pages: {locator['physical_page_start']}-{locator.get('physical_page_end', locator['physical_page_start'])}")
+    elif source_format == "EPUB":
+        for label, key in (("Spine", "spine_id"), ("Spine Index", "spine_index"), ("Href", "href"), ("Fragment", "fragment")):
+            if locator.get(key) not in (None, ""):
+                result.append(f"> {label}: {locator[key]}")
+    elif source_format == "TXT" and locator.get("line_start") is not None:
+        result.append(f"> Lines: {locator['line_start']}-{locator.get('line_end', locator['line_start'])}")
+    elif source_format in {"DOC", "DOCX"} and locator.get("paragraph_start") is not None:
+        result.append(f"> Paragraphs: {locator['paragraph_start']}-{locator.get('paragraph_end', locator['paragraph_start'])}")
+    elif source_format == "HTML":
+        for label, key in (("Href", "href"), ("Fragment", "fragment")):
+            if locator.get(key):
+                result.append(f"> {label}: {locator[key]}")
+    return result
+
+
+def write_import(document: ImportedSourceDocument, root: Path, options: ImportOptions | None = None) -> list[Path]:
+    """Materialize a format-neutral source document using the schema-v3 contract."""
+    options = options or ImportOptions()
+    document = _split_imported_units(document, options.max_unit_tokens)
+    validate_imported_source_document(document)
+    if options.force:
         _clear_raw_chapters(root)
     output = root / "raw" / "chapters"
     output.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    reading_units: list[dict[str, Any]] = []
-    units_by_href: dict[str, dict[str, Any]] = {}
+    records: list[dict[str, Any]] = []
+    page_ids_by_unit: dict[str, list[str]] = {}
+    for chapter, unit in enumerate(document.units, 1):
+        target = output / f"{chapter:02d}-{slugify(unit.title, f'chapter-{chapter}')}.md"
+        raw_path = target.relative_to(root).as_posix()
+        locator = unit.locator.to_dict()
+        record = {
+            "chapter": chapter,
+            "source_unit_id": unit.id,
+            "title": unit.title,
+            "source_title": unit.source_title or unit.title,
+            "kind": unit.kind,
+            "breadcrumb": list(unit.breadcrumb or (unit.title,)),
+            "confidence": unit.confidence,
+            "part": unit.part,
+            "part_count": unit.part_count,
+            "raw_path": raw_path,
+            "locator": locator,
+            **_legacy_locator_fields(locator),
+        }
+        if not target.exists() or options.force:
+            header = [
+                f"# {unit.title}", "", f"> Book: {document.title}",
+                f"> Chapter: {chapter}", f"> Source Unit: {unit.id}",
+                f"> Breadcrumb: {' › '.join(record['breadcrumb'])}", f"> Type: {unit.kind}",
+                f"> Confidence: {unit.confidence:.2f}", f"> Part: {unit.part}/{unit.part_count}",
+                f"> Source: {document.source_name}", f"> Format: {document.format.upper()}",
+                *_raw_locator_lines(locator), f"> Collected: {date.today().isoformat()}",
+            ]
+            if document.author:
+                header.insert(3, f"> Author: {document.author}")
+            target.write_text("\n".join(header) + f"\n\n{unit.text}\n", encoding="utf-8")
+        written.append(target)
+        records.append(record)
+        page_ids_by_unit.setdefault(unit.id, []).append(f"chapter-{chapter:02d}")
+
+    def serialize_node(node: ImportedSourceNode) -> dict[str, Any]:
+        value = imported_source_node_dict(node)
+        value["pageIds"] = [page_id for unit_id in value["unitIds"] for page_id in page_ids_by_unit.get(unit_id, [])]
+        value["children"] = [serialize_node(child) for child in node.children]
+        return value
+
+    structure_extra = document.metadata.get("_source_structure_extra", {})
+    if not isinstance(structure_extra, dict):
+        raise ValueError("source structure extras must be an object")
+    source_structure = {
+        **structure_extra,
+        "method": str(document.metadata.get("structure_method", "adapter")),
+        "confidence": float(document.metadata.get("structure_confidence", 0.0) or 0.0),
+        "outline": [serialize_node(node) for node in document.outline],
+        "units": records,
+    }
+    metadata_extra = document.metadata.get("_source_metadata_extra", {})
+    if not isinstance(metadata_extra, dict):
+        raise ValueError("source metadata extras must be an object")
+    source_metadata: dict[str, Any] = {
+        **metadata_extra,
+        "schema_version": 3,
+        "title": document.title,
+        "title_method": document.title_method,
+        "title_confidence": document.title_confidence,
+        "format": document.format.upper(),
+        "source_name": document.source_name,
+        "source_hash": document.source_hash,
+        "locator_policy": document.locator_policy,
+        "source_processing": document.processing,
+        "source_structure": source_structure,
+        "chapters": records,
+    }
+    if document.author:
+        source_metadata["author"] = document.author
+    if document.metadata:
+        source_metadata["metadata"] = document.metadata
+    if document.warnings:
+        source_metadata["warnings"] = document.warnings
+    write_source_metadata(root, source_metadata)
+    return written
+
+
+class _HtmlDocumentExtractor(HTMLParser):
+    """Deterministic body and heading extractor for standalone HTML inputs."""
+
+    ignored_tags = {"script", "style", "svg", "nav", "noscript", "template"}
+    content_tags = {"p", "li", "blockquote", "pre", "td", "th", "figcaption"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.skip = 0
+        self.blocks: list[dict[str, Any]] = []
+        self.headings: list[dict[str, Any]] = []
+        self.meta: dict[str, str] = {}
+        self._title_parts: list[str] = []
+        self._in_title = False
+        self._current: dict[str, Any] | None = None
+        self._block_number = 0
+        self._pending_anchor = ""
+        self._active_links: list[dict[str, Any]] = []
+        self.links: list[dict[str, Any]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        values = {key.lower(): value or "" for key, value in attrs}
+        if tag in self.ignored_tags:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag == "title":
+            self._in_title = True
+            return
+        if tag == "meta":
+            key = (values.get("name") or values.get("property") or "").lower()
+            if key and values.get("content") and key not in self.meta:
+                self.meta[key] = values["content"].strip()
+            return
+        if tag == "a":
+            anchor = (values.get("id") or values.get("name") or "").strip()
+            if anchor:
+                self._pending_anchor = anchor
+            href = values.get("href", "").strip()
+            if href:
+                self._active_links.append({
+                    "target": href,
+                    "text": [],
+                    "block_start": self._current["start"] if self._current else self._block_number + 1,
+                })
+            return
+        heading_level = int(tag[1]) if len(tag) == 2 and tag.startswith("h") and tag[1].isdigit() else None
+        if heading_level is not None or tag in self.content_tags:
+            self._finish_current()
+            self._block_number += 1
+            self._current = {
+                "tag": tag,
+                "text": [],
+                "start": self._block_number,
+                "end": self._block_number,
+                "heading_level": heading_level,
+                "anchor": values.get("id") or values.get("name") or self._pending_anchor,
+            }
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self.ignored_tags and self.skip:
+            self.skip -= 1
+            return
+        if self.skip:
+            return
+        if tag == "title":
+            self._in_title = False
+            return
+        if tag == "a" and self._active_links:
+            link = self._active_links.pop()
+            title = _clean_source_text("".join(link["text"]))
+            if title:
+                self.links.append({**link, "title": title})
+            return
+        if self._current and tag == self._current["tag"]:
+            self._finish_current()
+
+    def handle_data(self, data: str) -> None:
+        if self.skip:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._current is not None:
+            self._current["text"].append(data)
+        for link in self._active_links:
+            link["text"].append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._finish_current()
+
+    def _finish_current(self) -> None:
+        if self._current is None:
+            return
+        text = _clean_source_text("".join(self._current.pop("text")))
+        if text:
+            self._current["text"] = text
+            if self._current.get("anchor") == self._pending_anchor:
+                self._pending_anchor = ""
+            if self._current.get("heading_level") is not None:
+                self._current["heading_title"] = text
+                self.headings.append({
+                    "title": text,
+                    "level": self._current["heading_level"],
+                    "start": self._current["start"],
+                    "confidence": 0.98,
+                })
+            self.blocks.append(self._current)
+        self._current = None
+
+    @property
+    def title(self) -> str:
+        return " ".join("".join(self._title_parts).split())
+
+
+def _parse_html_document(source: Path) -> tuple[_HtmlDocumentExtractor, str]:
+    raw = source.read_bytes()
+    try:
+        content, encoding = raw.decode("utf-8-sig"), "utf-8-sig"
+    except UnicodeDecodeError:
+        content, encoding = raw.decode("utf-8", errors="replace"), "utf-8-replace"
+    parser = _HtmlDocumentExtractor()
+    parser.feed(content)
+    parser.close()
+    return parser, encoding
+
+
+_KINDLE_FILEPOS_TARGET_RE = re.compile(r"^#(filepos\d+)$", re.IGNORECASE)
+_KINDLE_FOOTNOTE_LINK_RE = re.compile(r"^[（(]\s*\d+\s*[）)]$")
+
+
+def _kindle_toc_entries(parser: _HtmlDocumentExtractor) -> list[dict[str, Any]]:
+    """Find the first substantial in-document Kindle table of contents."""
+    block_index_by_anchor = {
+        str(block.get("anchor", "")).lower(): index
+        for index, block in enumerate(parser.blocks)
+        if block.get("anchor")
+    }
+    candidates: list[dict[str, Any]] = []
+    for link in parser.links:
+        match = _KINDLE_FILEPOS_TARGET_RE.match(str(link.get("target", "")))
+        title = " ".join(str(link.get("title", "")).split())
+        if not match or not title or len(title) > 160 or _KINDLE_FOOTNOTE_LINK_RE.fullmatch(title):
+            continue
+        target = match.group(1).lower()
+        target_index = block_index_by_anchor.get(target)
+        if target_index is None:
+            continue
+        candidates.append({
+            "title": title,
+            "target": target,
+            "target_index": target_index,
+            "block_start": int(link.get("block_start", 0) or 0),
+        })
+    if not candidates:
+        return []
+
+    groups: list[list[dict[str, Any]]] = []
+    for candidate in candidates:
+        if groups and candidate["block_start"] <= groups[-1][-1]["block_start"] + 2:
+            groups[-1].append(candidate)
+        else:
+            groups.append([candidate])
+    valid_groups = [
+        group for group in groups
+        if len({entry["target"] for entry in group}) >= 2
+        and all(left["target_index"] < right["target_index"] for left, right in zip(group, group[1:]))
+    ]
+    if not valid_groups:
+        return []
+    selected = max(
+        valid_groups,
+        key=lambda group: (len({entry["target"] for entry in group}), -group[0]["block_start"]),
+    )
+    result: list[dict[str, Any]] = []
+    seen_targets: set[str] = set()
+    for entry in selected:
+        if entry["target"] not in seen_targets:
+            result.append(entry)
+            seen_targets.add(entry["target"])
+    return result
+
+
+def _kindle_toc_document(
+    source: Path,
+    options: ImportOptions,
+    parser: _HtmlDocumentExtractor,
+    encoding: str,
+) -> ImportedSourceDocument | None:
+    entries = _kindle_toc_entries(parser)
+    if not entries:
+        return None
+    first_content_index = entries[0]["target_index"]
+    front_matter_title = next(
+        (
+            str(block["text"])
+            for block in parser.blocks[:first_content_index]
+            if 1 <= len(str(block["text"])) <= 160
+        ),
+        "",
+    )
+    explicit = " ".join((options.title or "").split())
+    inferred = parser.title or parser.meta.get("og:title") or front_matter_title or _filename_title(source)
+    method = "explicit" if explicit else "html_title" if parser.title or parser.meta.get("og:title") else "kindle_front_matter" if front_matter_title else "filename"
+    confidence = 1.0 if explicit else 0.98 if method == "html_title" else 0.88 if method == "kindle_front_matter" else 0.35
+    title = explicit or inferred
+    units: list[ImportedSourceUnit] = []
+    outline: list[ImportedSourceNode] = []
+    for ordinal, entry in enumerate(entries, 1):
+        start = int(entry["target_index"])
+        end = int(entries[ordinal]["target_index"]) if ordinal < len(entries) else len(parser.blocks)
+        selected = parser.blocks[start:end]
+        if not selected:
+            continue
+        first, last = selected[0], selected[-1]
+        unit_title = str(entry["title"])
+        locator = SourceLocator("HTML", "html_anchor", {
+            "href": source.name,
+            "fragment": str(entry["target"]),
+            "block_start": first["start"],
+            "block_end": last["end"],
+            "element": first.get("tag", ""),
+        })
+        identity = json.dumps(locator.to_dict(), ensure_ascii=False, sort_keys=True)
+        unit_id = _stable_source_id("HTML", identity)
+        units.append(ImportedSourceUnit(
+            id=unit_id,
+            title=unit_title,
+            text="\n\n".join(str(block["text"]) for block in selected),
+            locator=locator,
+            kind=_kind(unit_title),
+            breadcrumb=(unit_title,),
+            confidence=0.98,
+            source_title=unit_title,
+            metadata={"start": first["start"], "end": last["end"], "kindle_toc_target": entry["target"]},
+        ))
+        outline.append(ImportedSourceNode(
+            id=f"outline-kindle-toc-{ordinal:03d}",
+            title=unit_title,
+            kind=_kind(unit_title),
+            breadcrumb=(unit_title,),
+            confidence=0.98,
+            unit_ids=[unit_id],
+        ))
+    if not units:
+        return None
+    return ImportedSourceDocument(
+        format="HTML",
+        source_name=source.name,
+        source_hash=sha256_file(source),
+        title=title,
+        title_method=method,
+        title_confidence=confidence,
+        author=parser.meta.get("author", ""),
+        units=units,
+        outline=outline,
+        metadata={
+            "html_meta": parser.meta,
+            "encoding": encoding,
+            "structure_method": "kindle_toc_anchors",
+            "structure_confidence": 0.98,
+            "kindle_toc_entries": len(entries),
+        },
+        processing={"format": "HTML", "steps": ["stdlib-html-parser", "kindle-filepos-toc"]},
+    )
+
+
+def _outline_from_authored_headings(
+    headings: list[dict[str, Any]],
+    units: list[ImportedSourceUnit],
+) -> list[ImportedSourceNode]:
+    """Retain every authored heading, including levels that do not split prose."""
+    if not headings:
+        return _source_outline(units)
+    unit_by_heading_start = {
+        int(unit.metadata["heading_start"]): unit
+        for unit in units
+        if unit.metadata.get("heading_start") is not None
+    }
+    roots: list[ImportedSourceNode] = []
+    stack: list[tuple[int, ImportedSourceNode]] = []
+    seen_units: set[str] = set()
+    for index, heading in enumerate(headings, 1):
+        heading_title = " ".join(str(heading.get("title", "")).split())
+        if not heading_title:
+            continue
+        level = max(1, min(int(heading.get("level", 1) or 1), 9))
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent = stack[-1][1] if stack else None
+        breadcrumb = (*parent.breadcrumb, heading_title) if parent else (heading_title,)
+        unit = unit_by_heading_start.get(int(heading.get("start", 0) or 0))
+        unit_ids = [unit.id] if unit is not None else []
+        if unit is not None:
+            unit.breadcrumb = breadcrumb
+            seen_units.add(unit.id)
+        node = ImportedSourceNode(
+            id=f"outline-heading-{index:03d}",
+            title=heading_title,
+            kind=_kind(heading_title),
+            breadcrumb=breadcrumb,
+            confidence=float(heading.get("confidence", 0.98) or 0.98),
+            unit_ids=unit_ids,
+        )
+        if parent is None:
+            roots.append(node)
+        else:
+            parent.children.append(node)
+        stack.append((level, node))
+    for unit in units:
+        if unit.id not in seen_units:
+            roots.append(ImportedSourceNode(
+                id=f"outline-{unit.id}",
+                title=unit.title,
+                kind=unit.kind,
+                breadcrumb=unit.breadcrumb or (unit.title,),
+                confidence=unit.confidence,
+                unit_ids=[unit.id],
+            ))
+    return roots
+
+
+def _document_from_blocks(
+    source: Path,
+    source_format: str,
+    title: str,
+    title_method: str,
+    title_confidence: float,
+    blocks: list[dict[str, Any]],
+    headings: list[dict[str, Any]],
+    locator_factory: Any,
+    *,
+    author: str = "",
+    metadata: dict[str, Any] | None = None,
+    processing: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> ImportedSourceDocument:
+    normalized = [{**block, "text": _clean_source_text(str(block.get("text", "")))} for block in blocks]
+    normalized = [block for block in normalized if block["text"]]
+    if not normalized:
+        raise ValueError(f"{source_format} source contains no readable text")
+    starts = [
+        index for index, block in enumerate(normalized)
+        if block.get("heading_level") is not None and int(block["heading_level"]) <= 2
+    ]
+    if not starts or starts[0] != 0:
+        starts.insert(0, 0)
+    units: list[ImportedSourceUnit] = []
+    for ordinal, start in enumerate(starts, 1):
+        end = starts[ordinal] if ordinal < len(starts) else len(normalized)
+        selected = normalized[start:end]
+        first, last = selected[0], selected[-1]
+        heading_level = first.get("heading_level")
+        unit_title = " ".join(str(first.get("heading_title") or "").split()) or (title if ordinal == 1 else f"Reading unit {ordinal}")
+        locator = locator_factory(first, last)
+        identity = json.dumps(locator.to_dict(), ensure_ascii=False, sort_keys=True)
+        unit_id = _stable_source_id(source_format, identity)
+        unit_metadata = {"start": first["start"], "end": last["end"]}
+        if heading_level is not None:
+            unit_metadata.update(heading_start=first["start"], heading_level=int(heading_level))
+        units.append(ImportedSourceUnit(
+            id=unit_id,
+            title=unit_title,
+            text="\n\n".join(str(block["text"]) for block in selected),
+            locator=locator,
+            kind=_kind(unit_title),
+            breadcrumb=(unit_title,),
+            confidence=0.98 if heading_level is not None else 0.55,
+            source_title=unit_title,
+            metadata=unit_metadata,
+        ))
+    return ImportedSourceDocument(
+        format=source_format,
+        source_name=source.name,
+        source_hash=sha256_file(source),
+        title=title,
+        title_method=title_method,
+        title_confidence=title_confidence,
+        author=author,
+        units=units,
+        outline=_outline_from_authored_headings(headings, units),
+        metadata=dict(metadata or {}),
+        processing=dict(processing or {"format": source_format, "steps": []}),
+        warnings=list(warnings or []),
+    )
+
+
+def _analyze_html_document(
+    source: Path,
+    options: ImportOptions,
+    parser: _HtmlDocumentExtractor,
+    encoding: str,
+) -> ImportedSourceDocument:
+    inferred = parser.title or parser.meta.get("og:title") or (parser.headings[0]["title"] if parser.headings else "") or _filename_title(source)
+    explicit = " ".join((options.title or "").split())
+    title = explicit or inferred
+    method = "explicit" if explicit else "html_title" if parser.title or parser.meta.get("og:title") else "html_heading" if parser.headings else "filename"
+    confidence = 1.0 if explicit else 0.98 if method == "html_title" else 0.88 if method == "html_heading" else 0.35
+
+    def locator(first: dict[str, Any], last: dict[str, Any]) -> SourceLocator:
+        values: dict[str, Any] = {"href": source.name, "block_start": first["start"], "block_end": last["end"], "element": first.get("tag", "")}
+        if first.get("anchor"):
+            values["fragment"] = first["anchor"]
+        return SourceLocator("HTML", "html_anchor" if values.get("fragment") else "html_block", values)
+
+    return _document_from_blocks(
+        source, "HTML", title, method, confidence, parser.blocks, parser.headings, locator,
+        author=parser.meta.get("author", ""),
+        metadata={"html_meta": parser.meta, "encoding": encoding, "structure_method": "html_headings" if parser.headings else "html_blocks", "structure_confidence": 0.98 if parser.headings else 0.55},
+        processing={"format": "HTML", "steps": ["stdlib-html-parser"]},
+        warnings=[] if parser.headings else ["HTML had no authored headings; imported as a conservative reading unit."],
+    )
+
+
+def analyze_html(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    parser, encoding = _parse_html_document(source)
+    return _analyze_html_document(source, options, parser, encoding)
+
+
+def _analyze_kindle_html(source: Path, options: ImportOptions) -> ImportedSourceDocument:
+    parser, encoding = _parse_html_document(source)
+    return _kindle_toc_document(source, options, parser, encoding) or _analyze_html_document(source, options, parser, encoding)
+
+
+def _decode_text_source(source: Path) -> tuple[str, str]:
+    data = source.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            pass
+    try:
+        match = importlib.import_module("charset_normalizer").from_bytes(data).best()
+        if match is not None:
+            return str(match), str(match.encoding or "charset-normalizer")
+    except ImportError:
+        pass
+    for encoding in ("gb18030", "cp1252", "latin-1"):
+        try:
+            return data.decode(encoding), encoding
+        except UnicodeDecodeError:
+            pass
+    return data.decode("utf-8", errors="replace"), "utf-8-replace"
+
+
+_TEXT_HEADING_RE = re.compile(r"^(?:第?[一二三四五六七八九十百千万0-9]+(?:部分|部|章|节|節)|[一二三四五六七八九十百千万]+[、.]|\d+(?:\.\d+)*[.、]?|chapter\s+\d+|part\s+\d+|section\s+\d+(?:\.\d+)*)\s*.*$", re.IGNORECASE)
+
+
+def _plain_heading(line: str, next_line: str) -> tuple[str, int] | None:
+    markdown = re.match(r"^(#{1,6})\s+(.+?)\s*$", line.strip())
+    if markdown:
+        return markdown.group(2), len(markdown.group(1))
+    if line.strip() and re.fullmatch(r"[=-]{3,}\s*", next_line):
+        return line.strip(), 1 if next_line.lstrip().startswith("=") else 2
+    if _TEXT_HEADING_RE.match(line.strip()):
+        return line.strip(), 2
+    return None
+
+
+def analyze_text(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    content, encoding = _decode_text_source(source)
+    lines = content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks: list[dict[str, Any]] = []
+    headings: list[dict[str, Any]] = []
+    pending: list[str] = []
+    start = 1
+    skip_until = 0
+
+    def flush(end: int) -> None:
+        nonlocal pending
+        text = "\n".join(pending).strip()
+        if text:
+            blocks.append({"text": text, "start": start, "end": end})
+        pending = []
+
+    for number, line in enumerate(lines, 1):
+        if number <= skip_until:
+            continue
+        next_line = lines[number] if number < len(lines) else ""
+        heading = _plain_heading(line, next_line)
+        if heading:
+            flush(number - 1)
+            heading_title, level = heading
+            end = number + 1 if line.strip() and re.fullmatch(r"[=-]{3,}\s*", next_line) else number
+            skip_until = end
+            blocks.append({"text": heading_title, "start": number, "end": end, "heading_level": level, "heading_title": heading_title})
+            headings.append({"title": heading_title, "level": level, "start": number})
+            start = end + 1
+        elif not line.strip():
+            flush(number - 1)
+            start = number + 1
+        else:
+            if not pending:
+                start = number
+            pending.append(line)
+    flush(len(lines))
+    explicit = " ".join((options.title or "").split())
+    title = explicit or _filename_title(source)
+
+    def locator(first: dict[str, Any], last: dict[str, Any]) -> SourceLocator:
+        return SourceLocator("TXT", "text_lines", {"line_start": first["start"], "line_end": last["end"], "encoding": encoding})
+
+    return _document_from_blocks(
+        source, "TXT", title, "explicit" if explicit else "filename", 1.0 if explicit else 0.35,
+        blocks, headings, locator,
+        metadata={"encoding": encoding, "structure_method": "text_headings" if headings else "text_blocks", "structure_confidence": 0.86 if headings else 0.45},
+        processing={"format": "TXT", "steps": ["decode", "conservative-heading-inference"]},
+        warnings=[] if headings else ["TXT had no recognized headings; imported as a conservative reading unit."],
+    )
+
+
+def _require_optional(module: str, extra: str) -> Any:
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise ValueError(f"{module} support is optional; install it with: pip install -e '.[{extra}]'") from exc
+
+
+def analyze_docx(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    docx = _require_optional("docx", "docx")
+    paragraph_type = importlib.import_module("docx.text.paragraph").Paragraph
+    table_type = importlib.import_module("docx.table").Table
+    document = docx.Document(source)
+    blocks: list[dict[str, Any]] = []
+    headings: list[dict[str, Any]] = []
+    ordinal = 0
+    for child in document.element.body.iterchildren():
+        tag = _local_name(child.tag)
+        if tag not in {"p", "tbl"}:
+            continue
+        ordinal += 1
+        if tag == "p":
+            paragraph = paragraph_type(child, document)
+            text = _clean_source_text(paragraph.text)
+            if not text:
+                continue
+            style = str(getattr(paragraph.style, "name", "") or "")
+            match = re.match(r"Heading\s+([1-9])\b", style, re.IGNORECASE)
+            level = int(match.group(1)) if match else None
+            block = {"text": text, "start": ordinal, "end": ordinal}
+            if level:
+                block.update(heading_level=level, heading_title=text)
+                headings.append({"title": text, "level": level, "start": ordinal})
+            blocks.append(block)
+        else:
+            table = table_type(child, document)
+            rows = [" | ".join(" ".join(cell.text.split()) for cell in row.cells) for row in table.rows]
+            rows = [row for row in rows if row.strip(" |")]
+            if rows:
+                blocks.append({"text": "\n".join(rows), "start": ordinal, "end": ordinal})
+    properties = document.core_properties
+    document_title = " ".join(str(properties.title or "").split())
+    author = " ".join(str(properties.author or "").split())
+    explicit = " ".join((options.title or "").split())
+    title = explicit or document_title or (headings[0]["title"] if headings else "") or _filename_title(source)
+    method = "explicit" if explicit else "docx_core_properties" if document_title else "docx_heading" if headings else "filename"
+    confidence = 1.0 if explicit else 0.98 if document_title else 0.88 if headings else 0.35
+
+    def locator(first: dict[str, Any], last: dict[str, Any]) -> SourceLocator:
+        return SourceLocator("DOCX", "docx_paragraphs", {"paragraph_start": first["start"], "paragraph_end": last["end"]})
+
+    return _document_from_blocks(
+        source, "DOCX", title, method, confidence, blocks, headings, locator,
+        author=author,
+        metadata={"structure_method": "docx_heading_styles" if headings else "docx_blocks", "structure_confidence": 0.98 if headings else 0.55},
+        processing={"format": "DOCX", "steps": ["python-docx", "ordered-paragraph-table-extraction"]},
+        warnings=[] if headings else ["DOCX had no Heading styles; outline was inferred from document order."],
+    )
+
+
+def _extract_doc_text(source: Path) -> str:
+    olefile = _require_optional("olefile", "doc")
+    try:
+        if not olefile.isOleFile(str(source)):
+            raise ValueError("DOC input is not a valid OLE compound document")
+        with olefile.OleFileIO(str(source)) as ole:
+            if ole.exists("EncryptedPackage") or ole.exists("EncryptionInfo"):
+                raise ValueError("encrypted DOC input is unsupported; provide an unencrypted document")
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"could not inspect DOC OLE container: {exc}") from exc
+    module = _require_optional("legacy_doc", "doc")
+    extract_text = getattr(module, "extract_text", None)
+    if not callable(extract_text):
+        raise ValueError("legacy-doc does not provide the required extract_text(bytes) API")
+    try:
+        result = extract_text(source.read_bytes())
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"legacy-doc could not extract readable text from this DOC input: {exc}") from exc
+    value = getattr(result, "text", None)
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, str) and value.strip():
+        return value
+    raise ValueError("legacy-doc returned no readable text for this DOC input")
+
+
+def analyze_doc(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    text = _extract_doc_text(source)
+    blocks = [{"text": line, "start": number, "end": number} for number, line in enumerate(_clean_source_text(text).splitlines(), 1) if line.strip()]
+    explicit = " ".join((options.title or "").split())
+    title = explicit or _filename_title(source)
+
+    def locator(first: dict[str, Any], last: dict[str, Any]) -> SourceLocator:
+        return SourceLocator("DOC", "doc_text_paragraphs", {"paragraph_start": first["start"], "paragraph_end": last["end"], "precision": "inferred"})
+
+    return _document_from_blocks(
+        source, "DOC", title, "explicit" if explicit else "filename", 1.0 if explicit else 0.35,
+        blocks, [], locator,
+        metadata={"structure_method": "legacy_doc_text", "structure_confidence": 0.35, "fidelity": "text_only"},
+        processing={"format": "DOC", "steps": ["olefile-validation", "legacy-doc-text-extraction"]},
+        warnings=["DOC import is best-effort text extraction; paragraph locations are inferred and layout/tables are not preserved."],
+    )
+
+
+def _epub_outline(
+    toc_outline: list[dict[str, Any]],
+    units: list[ImportedSourceUnit],
+) -> list[ImportedSourceNode]:
+    """Map authored EPUB navigation to units without duplicating shared XHTML pages."""
+    units_by_href = {
+        str(unit.locator.to_dict().get("href", "")): unit
+        for unit in units
+    }
+    assigned_unit_ids: set[str] = set()
+    position = [0]
+
+    def node_from_toc(value: dict[str, Any]) -> ImportedSourceNode:
+        position[0] += 1
+        node_id = f"epub-outline-{position[0]:03d}"
+        node_title = " ".join(str(value.get("title", "")).split()) or "Reading unit"
+        breadcrumb = tuple(value.get("breadcrumb") or [node_title])
+        children = [
+            node_from_toc(child)
+            for child in value.get("children", [])
+            if isinstance(child, dict)
+        ]
+        href = str(value.get("href", ""))
+        unit = units_by_href.get(href)
+        # Parent navigation entries often point to the first child XHTML item. The
+        # child must own that page so the rendered source tree has one destination.
+        unit_ids = [unit.id] if unit is not None and unit.id not in assigned_unit_ids else []
+        assigned_unit_ids.update(unit_ids)
+        return ImportedSourceNode(
+            id=node_id,
+            title=node_title,
+            kind=_kind(node_title),
+            breadcrumb=breadcrumb,
+            confidence=0.98,
+            unit_ids=unit_ids,
+            children=children,
+        )
+
+    result = [node_from_toc(node) for node in toc_outline if isinstance(node, dict)]
+    for unit in units:
+        if unit.id not in assigned_unit_ids:
+            position[0] += 1
+            result.append(ImportedSourceNode(
+                id=f"epub-fallback-{position[0]:03d}",
+                title=unit.title,
+                kind=unit.kind,
+                breadcrumb=unit.breadcrumb or (unit.title,),
+                confidence=unit.confidence,
+                unit_ids=[unit.id],
+            ))
+    return result
+
+
+def analyze_epub(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    parsed = parse_epub(source, keep_front_matter=options.keep_front_matter)
+    metadata = dict(parsed["metadata"])
+    metadata_title = " ".join(str(metadata.get("title", "")).split())
+    explicit = " ".join((options.title or "").split())
+    title = explicit or metadata_title or _filename_title(source)
+    method = "explicit" if explicit else "epub_metadata" if metadata_title else "filename"
+    confidence = 1.0 if explicit else 0.98 if metadata_title else 0.35
+    units: list[ImportedSourceUnit] = []
     for entry in parsed["entries"]:
         number = int(entry["number"])
         entry_title = " ".join(str(entry["title"]).split()) or f"Reading unit {number}"
-        fallback = f"chapter-{number}"
-        filename = f"{number:02d}-{slugify(entry_title, fallback)}.md"
-        target = output / filename
-        raw_path = target.relative_to(root).as_posix()
-        source_unit_id = f"epub-unit-{number:02d}"
-        kind = _kind(entry_title)
-        record = {
-            "chapter": number,
-            "source_unit_id": source_unit_id,
-            "title": entry_title,
-            "source_title": entry_title,
-            "kind": kind,
-            "breadcrumb": list(entry.get("breadcrumb") or [entry_title]),
-            "confidence": 0.98,
-            "part": 1,
-            "part_count": 1,
-            "raw_path": raw_path,
-            "spine": entry["spine"],
-            "spine_index": entry.get("spine_index"),
-            "href": entry["href"],
-            "fragment": entry.get("fragment", ""),
-        }
-        if not target.exists() or force:
-            content = (
-                f"# {entry_title}\n\n"
-                f"> Book: {book_title}\n> Author: {metadata.get('creator', 'Unknown')}\n"
-                f"> Edition: {metadata.get('edition', 'Unknown')}\n> Chapter: {number}\n"
-                f"> Source Unit: {source_unit_id}\n> Breadcrumb: {' › '.join(record['breadcrumb'])}\n> Type: {kind}\n"
-                f"> Confidence: 0.98\n> Source: {source.name}\n> Format: EPUB\n> Spine: {entry['spine']}\n"
-                f"> Spine Index: {entry.get('spine_index', '')}\n> Href: {entry['href']}\n"
-                f"> Fragment: {entry.get('fragment', '')}\n> Collected: {date.today().isoformat()}\n\n"
-                f"{entry['text']}\n"
-            )
-            target.write_text(content, encoding="utf-8")
-        written.append(target)
-        reading_units.append(record)
-        units_by_href.setdefault(str(entry["href"]), record)
+        locator = SourceLocator("EPUB", "epub_spine", {
+            "spine_id": entry["spine"], "spine_index": entry.get("spine_index"),
+            "href": entry["href"], "fragment": entry.get("fragment", ""),
+        })
+        units.append(ImportedSourceUnit(
+            id=f"epub-unit-{number:02d}",
+            title=entry_title, text=_clean_source_text(str(entry["text"])), locator=locator,
+            kind=_kind(entry_title), breadcrumb=tuple(entry.get("breadcrumb") or [entry_title]),
+            confidence=0.98, source_title=entry_title,
+        ))
+    return ImportedSourceDocument(
+        format="EPUB", source_name=source.name, source_hash=str(parsed["source_hash"]),
+        title=title, title_method=method, title_confidence=confidence,
+        author=str(metadata.get("creator", "")), units=units,
+        outline=_epub_outline(list(parsed.get("toc_outline") or []), units),
+        metadata={"epub_metadata": metadata, "structure_method": "epub_spine_toc", "structure_confidence": 0.98},
+        processing={"format": "EPUB", "steps": ["stdlib-zip-xml-spine-parser"]},
+        locator_policy="chapter-spine-href",
+    )
 
-    def outline_node(node: dict[str, Any], position: list[int], assigned_page_ids: set[str]) -> dict[str, Any]:
-        position[0] += 1
-        node_id = f"epub-outline-{position[0]:03d}"
-        node_title = " ".join(str(node.get("title", "")).split()) or "Reading unit"
-        breadcrumb = list(node.get("breadcrumb") or [node_title])
-        children = [
-            outline_node(child, position, assigned_page_ids)
-            for child in list(node.get("children") or [])
-            if isinstance(child, dict)
-        ]
-        href = str(node.get("href", ""))
-        unit = units_by_href.get(href)
-        page_id = f"chapter-{int(unit['chapter']):02d}" if unit else ""
-        # A section parent commonly points to the first child document. Bind that
-        # page to the deepest authored node only, rather than duplicating it in
-        # the reader tree and making both entries open the same article.
-        page_ids = [page_id] if page_id and page_id not in assigned_page_ids else []
-        assigned_page_ids.update(page_ids)
-        return {
-            "id": node_id,
-            "title": node_title,
-            "kind": _kind(node_title),
-            "breadcrumb": breadcrumb,
-            "confidence": 0.98,
-            "pageIds": page_ids,
-            "children": children,
-        }
 
-    toc_outline = list(parsed.get("toc_outline") or [])
-    outline_position = [0]
-    assigned_outline_page_ids: set[str] = set()
-    outline = [outline_node(node, outline_position, assigned_outline_page_ids) for node in toc_outline if isinstance(node, dict)]
-    if not outline:
-        outline = [{
-            "id": str(record["source_unit_id"]),
-            "title": str(record["title"]),
-            "kind": str(record["kind"]),
-            "breadcrumb": list(record["breadcrumb"]),
-            "confidence": float(record["confidence"]),
-            "pageIds": [f"chapter-{int(record['chapter']):02d}"],
-            "children": [],
-        } for record in reading_units]
-    write_source_metadata(root, {
-        "schema_version": 3,
-        "title": book_title,
-        "title_method": title_method,
-        "title_confidence": title_confidence,
-        "author": metadata.get("creator", "Unknown"),
-        "format": "EPUB",
-        "source_name": source.name,
-        "source_hash": parsed["source_hash"],
-        "locator_policy": "chapter-spine-href",
-        "source_processing": {
-            "format": "EPUB",
-            "steps": [],
-        },
-        "source_structure": {
-            "method": "epub_spine_toc",
-            "confidence": 0.98,
-            "outline": outline,
-            "units": reading_units,
-        },
-        "chapters": reading_units,
-    })
-    return written
+def _extract_kindle(source: Path) -> tuple[Path, Path]:
+    mobi = _require_optional("mobi", "kindle")
+    try:
+        result = mobi.extract(str(source))
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc)
+        if re.search(r"drm|encrypt|protected|permission", message, re.IGNORECASE):
+            raise ValueError("DRM/encrypted Kindle input is unsupported; provide a DRM-free file") from exc
+        raise ValueError(f"could not extract DRM-free Kindle input: {message}") from exc
+    if not isinstance(result, tuple) or len(result) < 2:
+        raise ValueError("mobi extractor returned an unsupported result")
+    return Path(result[0]), Path(result[1])
+
+
+def analyze_kindle(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    source_format = detect_source_type(source, options.source_format)
+    workspace, payload = _extract_kindle(source)
+    try:
+        if payload.suffix.lower() == ".epub":
+            unpacked = analyze_epub(payload, options)
+        elif payload.suffix.lower() in {".html", ".htm", ".xhtml"}:
+            unpacked = _analyze_kindle_html(payload, options)
+        else:
+            raise ValueError(f"Kindle extractor produced unsupported payload: {payload.name}")
+        units = []
+        for unit in unpacked.units:
+            values = {"original_format": source_format, "unpacked_locator": unit.locator.to_dict(), "section": unit.id}
+            units.append(replace(unit, locator=SourceLocator(source_format, "kindle_section", values)))
+        return replace(
+            unpacked, format=source_format, source_name=source.name, source_hash=sha256_file(source), units=units,
+            metadata={**unpacked.metadata, "unpacked_from": {"source_name": source.name, "format": source_format}},
+            processing={"format": source_format, "steps": ["mobi-kindleunpack", f"{unpacked.format.lower()}-adapter"]},
+            warnings=[*unpacked.warnings, "Kindle input was imported from a DRM-free extracted payload; original binary layout is not preserved."],
+            locator_policy="kindle-unpacked-native-locator",
+        )
+    finally:
+        if workspace.is_dir():
+            shutil.rmtree(workspace, ignore_errors=True)
+
+
+def analyze_source(source: Path, options: ImportOptions | None = None) -> ImportedSourceDocument:
+    options = options or ImportOptions()
+    source_format = detect_source_type(source, options.source_format)
+    if source_format == "EPUB":
+        return analyze_epub(source, options)
+    if source_format == "TXT":
+        return analyze_text(source, options)
+    if source_format == "HTML":
+        return analyze_html(source, options)
+    if source_format == "DOCX":
+        return analyze_docx(source, options)
+    if source_format == "DOC":
+        return analyze_doc(source, options)
+    if source_format in {"MOBI", "AZW", "AZW3"}:
+        return analyze_kindle(source, options)
+    raise ValueError("PDF uses the existing layout/OCR-aware compatibility importer")
+
+
+def validate_source_document(document: ImportedSourceDocument) -> None:
+    validate_imported_source_document(document)
+
+
+def import_document(source: Path, root: Path, options: ImportOptions | None = None) -> list[Path]:
+    options = options or ImportOptions()
+    source_format = detect_source_type(source, options.source_format)
+    if source_format == "PDF":
+        return import_pdf(
+            source, root, options.title, options.pages_per_chapter, options.chapter_count, options.force,
+            structure=options.structure, structure_min_confidence=options.structure_min_confidence,
+            structure_report=options.structure_report, max_unit_tokens=options.max_unit_tokens,
+            postprocess=options.postprocess, structure_manifest=options.structure_manifest,
+            pdf_ocr=options.pdf_ocr, pdf_ocr_dpi=options.pdf_ocr_dpi,
+            pdf_ocr_confidence=options.pdf_ocr_confidence,
+        )
+    document = analyze_source(source, options)
+    return write_import(document, root, options)
+
+
+def import_epub(source: Path, root: Path, title: str | None = None, force: bool = False, keep_front_matter: bool = False) -> list[Path]:
+    options = ImportOptions(title=title, force=force, keep_front_matter=keep_front_matter)
+    return write_import(analyze_epub(source, options), root, options)

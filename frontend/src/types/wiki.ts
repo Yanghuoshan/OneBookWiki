@@ -1,3 +1,5 @@
+export type SourceLocator = Record<string, unknown>;
+
 export type WikiPage = {
   id: string;
   title: string;
@@ -13,6 +15,7 @@ export type WikiPage = {
   spineIndex?: number;
   href?: string;
   fragment?: string;
+  sourceUnitLocator?: SourceLocator;
   part?: number;
   partCount?: number;
   bookTitle?: string;
@@ -66,7 +69,8 @@ export type EvidenceRecord = {
   spine_index?: number;
   href?: string;
   fragment?: string;
-  locator?: Record<string, unknown>;
+  locator?: SourceLocator;
+  source_unit_locator?: SourceLocator;
   display_label?: string;
 };
 

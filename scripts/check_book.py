@@ -26,6 +26,7 @@ LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 NO_MATERIAL_RE = re.compile(r"^## \[[^\]]*\]\s*ingest\s*\|\s*no material:\s*`?(\S+?)`?\s*$", re.IGNORECASE)
 SKIP_ARTICLES = {"index.md", "log.md", "book.md"}
 INTERNAL_CITATION_RE = re.compile(r"(?<![\\w/])C\\d+E\\d+(?![\\w/])")
+SUPPORTED_SOURCE_FORMATS = {"PDF", "EPUB", "MOBI", "AZW", "AZW3", "TXT", "DOC", "DOCX", "HTML"}
 
 @dataclass(frozen=True)
 class Chapter:
@@ -228,6 +229,82 @@ def print_section(title: str, values: list[str], quiet: bool = False) -> int:
         print("(none)")
     print()
     return len(values)
+
+
+def source_metadata_health(root: Path, source_metadata: dict[str, object] | None) -> list[str]:
+    """Check schema-v3 source metadata without requiring new fields in legacy books."""
+    if source_metadata is None:
+        return []
+    problems: list[str] = []
+    source_format = str(source_metadata.get("format", "")).upper()
+    if source_format and source_format not in SUPPORTED_SOURCE_FORMATS:
+        problems.append(f"source metadata has unsupported format: {source_format}")
+    schema_version = source_metadata.get("schema_version")
+    if schema_version is not None and schema_version != 3:
+        problems.append("source metadata schema_version must be 3")
+    structure = source_metadata.get("source_structure")
+    if not isinstance(structure, dict):
+        return problems
+    units = structure.get("units") or source_metadata.get("chapters") or []
+    if not isinstance(units, list):
+        return [*problems, "source structure units must be an array"]
+    known_ids: set[str] = set()
+    raw_root = (root / "raw" / "chapters").resolve()
+    expected_chapter = 1
+    for position, unit in enumerate(units, 1):
+        if not isinstance(unit, dict):
+            problems.append(f"source unit {position} is not an object")
+            continue
+        if unit.get("chapter") != expected_chapter:
+            problems.append(f"source unit {position} has non-contiguous chapter number")
+        expected_chapter += 1
+        unit_id = unit.get("source_unit_id")
+        if not isinstance(unit_id, str) or not unit_id or unit_id in known_ids:
+            problems.append(f"source unit {position} has missing or duplicate source_unit_id")
+        else:
+            known_ids.add(unit_id)
+        raw_path = unit.get("raw_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            problems.append(f"source unit {position} has no raw_path")
+        else:
+            candidate = (root / raw_path).resolve()
+            if not candidate.is_relative_to(raw_root) or not candidate.is_file():
+                problems.append(f"source unit {position} has unsafe or missing raw_path")
+        locator = unit.get("locator")
+        if locator is not None:
+            if not isinstance(locator, dict) or not locator.get("format") or not locator.get("kind"):
+                problems.append(f"source unit {position} has invalid locator")
+            elif source_format and str(locator.get("format", "")).upper() != source_format:
+                problems.append(f"source unit {position} locator format differs from source format")
+    referenced: set[str] = set()
+
+    def visit(nodes: object) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            for page_id in node.get("pageIds", []) or []:
+                if not isinstance(page_id, str) or not re.fullmatch(r"chapter-\d+", page_id):
+                    problems.append("source outline has invalid pageId")
+            unit_ids = node.get("unitIds", []) or []
+            for unit_id in unit_ids:
+                if isinstance(unit_id, str):
+                    referenced.add(unit_id)
+                else:
+                    problems.append("source outline has invalid unitId")
+            visit(node.get("children", []))
+
+    visit(structure.get("outline", []))
+    has_canonical_locators = any(isinstance(unit, dict) and isinstance(unit.get("locator"), dict) for unit in units)
+    if known_ids and (referenced or has_canonical_locators):
+        missing = sorted(known_ids - referenced)
+        if missing:
+            problems.append(f"source outline does not cover unit(s): {', '.join(missing)}")
+        unknown = sorted(referenced - known_ids)
+        if unknown:
+            problems.append(f"source outline refers to unknown unit(s): {', '.join(unknown)}")
+    return problems
 
 
 def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: dict[str, object]) -> list[str]:
@@ -434,6 +511,7 @@ def structure_health(root: Path) -> list[str]:
                 source_format = str(source_metadata.get("format", "")).upper()
         except (OSError, ValueError):
             problems.append(".onebookwiki/source.json is invalid JSON")
+    problems.extend(source_metadata_health(root, source_metadata))
     if source_format == "PDF":
         if not report_path.is_file():
             problems.append("PDF source is missing .onebookwiki/structure-report.json")

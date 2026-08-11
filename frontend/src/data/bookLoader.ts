@@ -76,10 +76,58 @@ export function formatSourceType(sourceType?: string): string | undefined {
   return sourceType.replace(/[_-]+/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
+type LocatorCarrier = {
+  physical_page_start?: number;
+  physical_page_end?: number;
+  spine?: string;
+  spine_index?: number;
+  href?: string;
+  fragment?: string;
+  locator?: Record<string, unknown>;
+};
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function asText(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+export function formatNativeLocator(record: LocatorCarrier): string | undefined {
+  const locator = record.locator || {};
+  const format = asText(locator.format)?.toUpperCase();
+  const pdf = formatPdfRange(
+    record.physical_page_start ?? asNumber(locator.physical_page_start),
+    record.physical_page_end ?? asNumber(locator.physical_page_end),
+  );
+  const epub = formatEpubLocator(record);
+  if (format === 'PDF') return pdf;
+  if (format === 'EPUB') return epub;
+  const range = (single: string, plural: string, start: unknown, end: unknown) => {
+    const first = asNumber(start);
+    const last = asNumber(end) ?? first;
+    if (first === undefined) return undefined;
+    return first === last ? `${single} ${first}` : `${plural} ${first}-${last}`;
+  };
+  if (format === 'TXT') return range('TXT line', 'TXT lines', locator.line_start, locator.line_end);
+  if (format === 'DOC' || format === 'DOCX') return range(`${format} paragraph`, `${format} paragraphs`, locator.paragraph_start, locator.paragraph_end);
+  if (format === 'HTML') {
+    const href = asText(locator.href);
+    const fragment = asText(locator.fragment);
+    if (href || fragment) return `HTML ${href || 'document'}${fragment ? `#${fragment}` : ''}`;
+    return range('HTML block', 'HTML blocks', locator.block_start, locator.block_end);
+  }
+  if (format === 'MOBI' || format === 'AZW' || format === 'AZW3') {
+    const section = asText(locator.section);
+    return section ? `${format} section ${section}` : format;
+  }
+  return pdf || epub;
+}
+
 export function formatLocator(record: EvidenceRecord): string {
   return record.display_label
-    || formatPdfRange(record.physical_page_start, record.physical_page_end)
-    || formatEpubLocator(record)
+    || formatNativeLocator(record)
     || record.source_title
     || record.book_title
     || 'Source reference';

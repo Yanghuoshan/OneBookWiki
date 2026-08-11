@@ -44,6 +44,7 @@ class ChapterInterpretation:
     spine_index: int | None = None
     href: str = ""
     fragment: str = ""
+    locator: dict[str, Any] = field(default_factory=dict)
     structure_confidence: float = 0.0
     part: int = 1
     part_count: int = 1
@@ -151,6 +152,7 @@ def chapter_from_dict(value: dict[str, Any]) -> ChapterInterpretation:
         spine_index=int(value["spine_index"]) if value.get("spine_index") is not None else None,
         href=str(value.get("href", "")),
         fragment=str(value.get("fragment", "")),
+        locator=dict(value.get("locator") or {}),
         structure_confidence=float(value.get("structure_confidence", value.get("confidence", 0.0)) or 0.0),
         part=int(value.get("part", 1) or 1),
         part_count=int(value.get("part_count", 1) or 1),

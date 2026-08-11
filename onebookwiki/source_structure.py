@@ -23,6 +23,152 @@ DEFAULT_MAX_UNIT_TOKENS = 12000
 
 
 @dataclass(frozen=True)
+class SourceLocator:
+    """Native, serializable provenance for one imported reading unit.
+
+    The concrete fields intentionally remain format-specific.  Every locator still
+    carries a normalized ``format`` and ``kind`` so downstream code does not need
+    a separate source pipeline for every input format.
+    """
+
+    format: str
+    kind: str
+    values: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        reserved = {"format", "kind"}
+        conflicts = reserved.intersection(self.values)
+        if conflicts:
+            names = ", ".join(sorted(conflicts))
+            raise ValueError(f"source locator values cannot override reserved field(s): {names}")
+        return {"format": self.format.upper(), "kind": self.kind, **self.values}
+
+
+@dataclass
+class ImportedSourceUnit:
+    """Format-neutral extracted reading unit written by the shared importer."""
+
+    id: str
+    title: str
+    text: str
+    locator: SourceLocator
+    kind: str = "section"
+    breadcrumb: tuple[str, ...] = ()
+    confidence: float = 0.0
+    source_title: str = ""
+    part: int = 1
+    part_count: int = 1
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ImportedSourceNode:
+    """Format-neutral authored or inferred source-outline node."""
+
+    id: str
+    title: str
+    kind: str = "section"
+    breadcrumb: tuple[str, ...] = ()
+    confidence: float = 0.0
+    unit_ids: list[str] = field(default_factory=list)
+    children: list["ImportedSourceNode"] = field(default_factory=list)
+
+
+@dataclass
+class ImportedSourceDocument:
+    """One fully analyzed source, before it is materialized into a project."""
+
+    format: str
+    source_name: str
+    source_hash: str
+    title: str
+    title_method: str
+    title_confidence: float
+    units: list[ImportedSourceUnit]
+    outline: list[ImportedSourceNode]
+    author: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    processing: dict[str, Any] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    locator_policy: str = "native-source-locator"
+
+
+@dataclass(frozen=True)
+class ImportOptions:
+    """Shared importer options; PDF-only settings are ignored by other adapters."""
+
+    title: str | None = None
+    force: bool = False
+    keep_front_matter: bool = False
+    pages_per_chapter: int | None = None
+    chapter_count: int | None = None
+    structure: str = "auto"
+    structure_min_confidence: float = 0.72
+    structure_report: Path | None = None
+    max_unit_tokens: int = DEFAULT_MAX_UNIT_TOKENS
+    postprocess: str = "auto"
+    structure_manifest: Path | None = None
+    pdf_ocr: str = "off"
+    pdf_ocr_dpi: int | None = None
+    pdf_ocr_confidence: float | None = None
+    source_format: str | None = None
+
+
+def imported_locator_dict(locator: SourceLocator) -> dict[str, Any]:
+    return locator.to_dict()
+
+
+def imported_source_node_dict(node: ImportedSourceNode) -> dict[str, Any]:
+    return {
+        "id": node.id,
+        "title": node.title,
+        "kind": node.kind,
+        "breadcrumb": list(node.breadcrumb),
+        "confidence": node.confidence,
+        "unitIds": list(node.unit_ids),
+        "children": [imported_source_node_dict(child) for child in node.children],
+    }
+
+
+def validate_imported_source_document(document: ImportedSourceDocument) -> None:
+    """Reject malformed adapters before they can create a partial project import."""
+
+    document_format = document.format.upper()
+    if not document_format:
+        raise ValueError("source document format is required")
+    if not document.units:
+        raise ValueError(f"{document_format} source contains no readable text units")
+    unit_ids: set[str] = set()
+    for unit in document.units:
+        if not unit.id or unit.id in unit_ids:
+            raise ValueError(f"{document_format} source has duplicate or empty unit id: {unit.id!r}")
+        unit_ids.add(unit.id)
+        if not unit.title.strip():
+            raise ValueError(f"{document_format} source unit {unit.id!r} has no title")
+        if not unit.text.strip():
+            raise ValueError(f"{document_format} source unit {unit.id!r} contains no readable text")
+        locator = unit.locator.to_dict()
+        if str(locator.get("format", "")).upper() != document_format:
+            raise ValueError(f"{document_format} source unit {unit.id!r} has an incompatible locator format")
+        if not str(locator.get("kind", "")).strip():
+            raise ValueError(f"{document_format} source unit {unit.id!r} has no locator kind")
+
+    node_ids: set[str] = set()
+
+    def visit(nodes: list[ImportedSourceNode]) -> None:
+        for node in nodes:
+            if not node.id or node.id in node_ids:
+                raise ValueError(f"{document_format} source has duplicate or empty outline id: {node.id!r}")
+            node_ids.add(node.id)
+            unknown = set(node.unit_ids) - unit_ids
+            if unknown:
+                raise ValueError(f"{document_format} outline node {node.id!r} refers to unknown units: {sorted(unknown)}")
+            visit(node.children)
+
+    visit(document.outline)
+
+
+@dataclass(frozen=True)
 class PdfSpan:
     """A native PDF text span with the geometry needed for deterministic cleanup."""
 
@@ -1583,5 +1729,11 @@ def reading_part_dict(part: ReadingPart, chapter: int, raw_path: str) -> dict[st
         "part_count": part.part_count,
         "physical_page_start": part.physical_page_start,
         "physical_page_end": part.physical_page_end,
+        "locator": {
+            "format": "PDF",
+            "kind": "pdf_pages",
+            "physical_page_start": part.physical_page_start,
+            "physical_page_end": part.physical_page_end,
+        },
         "raw_path": raw_path,
     }

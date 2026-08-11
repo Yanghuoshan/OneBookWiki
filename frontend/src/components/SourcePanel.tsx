@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { EvidenceRecord } from '../types/wiki';
-import { formatEpubLocator, formatLocator, formatPdfRange, formatSourceType } from '../data/bookLoader';
+import { formatLocator, formatNativeLocator, formatSourceType } from '../data/bookLoader';
 
 type Props = {
   record: EvidenceRecord;
@@ -22,13 +22,12 @@ export default function SourcePanel({ record, width, minWidth, maxWidth, onWidth
   const handleRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
   const title = record.source_title || record.breadcrumb?.at(-1) || record.book_title || formatLocator(record);
+  const sourceUnitLocation = formatNativeLocator({ locator: record.source_unit_locator });
+  const evidenceLocation = formatNativeLocator(record);
   const details = Array.from(new Set([
     record.book_title,
     record.breadcrumb?.length ? record.breadcrumb.join(' › ') : undefined,
     formatSourceType(record.source_type),
-    formatPdfRange(record.physical_page_start, record.physical_page_end),
-    formatEpubLocator(record),
-    formatLocator(record),
   ].filter((detail): detail is string => Boolean(detail))));
   const excerptLines = record.excerpt?.split('\n') || [];
   const hasLineRange = Boolean(
@@ -117,6 +116,8 @@ export default function SourcePanel({ record, width, minWidth, maxWidth, onWidth
       />
       <div className="source-header"><div><span className="eyebrow">SOURCE LOCATION</span><h2>{title}</h2></div><button type="button" className="close-button" onClick={onClose} aria-label="关闭来源面板">×</button></div>
       {details.length > 0 && <div className="source-card">{details.map(detail => <span key={detail}>{detail}</span>)}</div>}
+      {sourceUnitLocation && <p className="source-range">阅读单元位置 · {sourceUnitLocation}</p>}
+      {evidenceLocation && evidenceLocation !== sourceUnitLocation && <p className="source-range">证据摘录位置 · {evidenceLocation}</p>}
       {sourceRange && <p className="source-range">{sourceRange}</p>}
       {hasLineRange ? (
         <div className="evidence-lines" aria-label="Evidence excerpt with source line numbers">

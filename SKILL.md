@@ -21,8 +21,8 @@ Every load-bearing exact number, date, and direct quotation in `wiki/` must occu
 ## Ingest
 
 1. Initialize only missing directories/files on the first ingest; never overwrite existing work.
-2. Store one bounded chapter in `raw/chapters/<number>-<slug>.md` with Book, Edition, Chapter, Pages/Location, Source, Collected, Published, and Format metadata.
-3. Index the chapter with section-aware chunks, source line ranges, token counts, and content hashes. Reuse unchanged chunks; embed only changed chunks.
+2. Import PDF, EPUB, HTML/HTM, TXT, DOC/DOCX, and only DRM-free MOBI/AZW/AZW3 through the shared source contract. Store one bounded chapter in `raw/chapters/<number>-<slug>.md` with Book, Chapter, native `Locator`, Source, Collected, and Format metadata. Keep the reading-unit locator distinct from each chunk's evidence locator and raw line range.
+3. Index the chapter with section-aware chunks, native evidence locators, source line ranges, token counts, and content hashes. Reuse unchanged chunks; embed only changed chunks. Never invoke external document converters or DRM removal/decryption.
 4. Compile the chapter page from retrieved evidence and update only affected theme/concept/argument/review pages. Process batches sequentially because index and log are shared state.
 5. Update `wiki/index.md` and append `wiki/log.md`.
 

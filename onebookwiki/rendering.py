@@ -169,6 +169,7 @@ def _write_evidence_index(root: Path, chapters: list[ChapterInterpretation], boo
             "spine_index": chapter.spine_index if chapter else None,
             "href": chapter.href or None if chapter else None,
             "fragment": chapter.fragment or None if chapter else None,
+            "source_unit_locator": dict(chapter.locator) if chapter else {},
         }
         records[evidence_id] = {
             **to_dict(ref),
@@ -273,6 +274,7 @@ def render_chapter(
         href = f"{chapter.href}{f'#{chapter.fragment}' if chapter.fragment else ''}" if chapter.href else ""
         spine = f"Spine {chapter.spine_index}" if chapter.spine_index is not None else chapter.spine
         epub_location = f"\n> EPUB Location: {' · '.join(item for item in (spine, href) if item)}"
+    source_locator = f"\n> Source Locator: {json.dumps(chapter.locator, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}" if chapter.locator else ""
     breadcrumb = " › ".join(chapter.breadcrumb)
     part = f"\n> Part: {chapter.part}/{chapter.part_count}" if chapter.part_count > 1 else ""
     content = f"""# {_chapter_label(chapter)}
@@ -282,7 +284,7 @@ def render_chapter(
 > Chapter: {chapter.chapter}
 > Source Unit: {chapter.source_unit_id}
 > Breadcrumb: {breadcrumb}
-> Type: {chapter.source_type or 'reading_unit'}{pages}{epub_location}{part}
+> Type: {chapter.source_type or 'reading_unit'}{pages}{epub_location}{source_locator}{part}
 > Updated: {date.today().isoformat()}
 
 ## Chapter Purpose
@@ -591,6 +593,7 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
             "spineIndex": chapter.spine_index,
             "href": chapter.href or None,
             "fragment": chapter.fragment or None,
+            "sourceUnitLocator": dict(chapter.locator),
             "part": chapter.part,
             "partCount": chapter.part_count,
             "rawSources": sorted({ref.source_path for ref in chapter.evidence}),

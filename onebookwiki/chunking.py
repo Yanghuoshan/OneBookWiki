@@ -33,6 +33,17 @@ _METADATA_RE = re.compile(r"^>\s*([^:]+):\s*(.*?)\s*$", re.MULTILINE)
 _PAGE_HEADING_RE = re.compile(r"^##\s+Page\s+(\d+)\s*$", re.IGNORECASE)
 
 
+def _metadata_locator(values: dict[str, str]) -> dict[str, object] | None:
+    raw = values.get("locator", "")
+    if not raw:
+        return None
+    try:
+        locator = __import__("json").loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return dict(locator) if isinstance(locator, dict) else None
+
+
 def _document_metadata(text: str) -> dict[str, str]:
     return {key.strip().lower(): value.strip() for key, value in _METADATA_RE.findall(text)}
 
@@ -54,9 +65,10 @@ def _page_numbers_for_lines(text: str, start_line: int, end_line: int) -> list[i
 
 
 def locator_for_range(text: str, start_line: int, end_line: int, chapter: int) -> dict[str, object]:
-    """Build a display-ready provenance locator from imported chapter Markdown."""
+    """Build a precise evidence locator from normalized imported Markdown."""
     values = _document_metadata(text)
-    source_format = values.get("format", "").upper()
+    native = _metadata_locator(values)
+    source_format = str((native or {}).get("format") or values.get("format", "")).upper()
     if source_format == "PDF":
         pages = _page_numbers_for_lines(text, start_line, end_line)
         if pages:
@@ -65,8 +77,15 @@ def locator_for_range(text: str, start_line: int, end_line: int, chapter: int) -
         if page_range:
             return {"format": "PDF", "physical_page_start": int(page_range.group(1)), "physical_page_end": int(page_range.group(2)), "precision": "chapter-range"}
         return {"format": "PDF", "precision": "unknown"}
+    if native:
+        locator: dict[str, object] = dict(native)
+        locator.setdefault("kind", f"{source_format.lower()}_range" if source_format else "source_range")
+        locator["chapter"] = chapter
+        locator["source_line_start"] = start_line
+        locator["source_line_end"] = end_line
+        return locator
     if source_format == "EPUB":
-        locator: dict[str, object] = {"format": "EPUB", "chapter": chapter}
+        locator = {"format": "EPUB", "kind": "epub_spine", "chapter": chapter}
         if values.get("spine"):
             locator["spine_id"] = values["spine"]
         if values.get("spine index"):
@@ -76,7 +95,7 @@ def locator_for_range(text: str, start_line: int, end_line: int, chapter: int) -
         if values.get("fragment"):
             locator["fragment"] = values["fragment"]
         return locator
-    return {"format": source_format or "UNKNOWN", "chapter": chapter}
+    return {"format": source_format or "UNKNOWN", "kind": "source_range", "chapter": chapter, "source_line_start": start_line, "source_line_end": end_line}
 
 
 def count_tokens(text: str) -> int:

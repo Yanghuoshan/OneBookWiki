@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { formatConfidence, formatPdfRange, formatSourceType, loadBook, loadPage, resolveBookBase } from '../data/bookLoader';
+import { formatConfidence, formatNativeLocator, formatSourceType, loadBook, loadPage, resolveBookBase } from '../data/bookLoader';
 import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiStructure } from '../types/wiki';
 import PageTree from '../components/PageTree';
 import MarkdownReader from '../components/MarkdownReader';
@@ -30,7 +30,15 @@ function sourceNodesByPageId(nodes: SourceOutlineNode[]): Map<string, SourceOutl
 function pageMeta(page: WikiPage, sourceNode?: SourceOutlineNode): string[] {
   const breadcrumb = page.breadcrumb?.length ? page.breadcrumb.join(' › ') : sourceNode?.breadcrumb.join(' › ');
   const sourceType = page.sourceKind || sourceNode?.kind;
-  const range = formatPdfRange(page.physicalPageStart, page.physicalPageEnd);
+  const range = formatNativeLocator({
+    physical_page_start: page.physicalPageStart,
+    physical_page_end: page.physicalPageEnd,
+    spine: page.spine,
+    spine_index: page.spineIndex,
+    href: page.href,
+    fragment: page.fragment,
+    locator: page.sourceUnitLocator,
+  });
   const confidence = formatConfidence(sourceNode?.confidence);
   const part = (page.partCount || 1) > 1 ? `Part ${page.part || 1} of ${page.partCount}` : undefined;
   return [breadcrumb, formatSourceType(sourceType), range, part, confidence].filter((value): value is string => Boolean(value));

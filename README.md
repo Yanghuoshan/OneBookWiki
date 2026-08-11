@@ -50,15 +50,30 @@ When native structure evidence is missing or low-confidence, opt into the local-
 
 For PDFs that already contain an OCR-generated text layer, PDF import applies conservative, coordinate-based cleanup by default before it writes raw chapters: `--pdf-postprocess auto` removes corroborated page-edge headers/footers and isolated page labels, normalizes Unicode/spacing, repairs safe English line-wrap hyphens, restores paragraphs, and orders clear two-column pages. It does **not** run OCR, an LLM, a spelling corrector, Chinese segmentation, or Traditional/Simplified conversion. `analyse_pdf()` still derives the outline from the native extracted view, so this cleanup does not change chapter boundaries; the processed view is only used for raw/RAG text after those boundaries are fixed. Use `--pdf-postprocess off` to retain the unmodified text layer or `--pdf-postprocess strict` to retain a page if a conservative transformation would empty it. Complex tables, footnotes, sidebars, and mixed layouts are kept conservatively rather than inferred. Changing this setting changes raw chapter text, so reimport with `--force` before reindexing.
 
-## EPUB/PDF import and generation
+## Source import and generation
 
-EPUB import uses only the Python standard library and preserves spine/href provenance:
+All supported source formats share one structured materialization contract after format-specific parsing: raw chapters, schema-v3 `source.json`, source-unit locators, chunk evidence locators, indexing, generation, rendering, and checking. PDF retains its native layout/OCR-aware path; EPUB retains spine, TOC, href, and fragment provenance.
+
+| Input | Parser and primary locator | Installation / limitation |
+| --- | --- | --- |
+| PDF | Native PDF layout, physical pages | `.[cloud]` for PyMuPDF |
+| EPUB | Standard-library ZIP/XML spine and TOC | No extra dependency |
+| HTML/HTM | Standard-library `HTMLParser`, anchors/blocks | No extra dependency |
+| TXT | Deterministic headings and source lines | `.[text]` improves legacy encoding detection |
+| DOCX | Ordered paragraphs/tables and Heading styles | `.[docx]` |
+| DOC | In-process text-only extraction, inferred paragraphs | `.[doc]`; layout and tables are not preserved |
+| MOBI/AZW/AZW3 | DRM-free extracted EPUB/HTML payload | `.[kindle]` installs GPL-3.0-only `mobi`; assess that license before use. No DRM removal or bypass is supported |
 
 ```text
 python scripts/ingest_epub.py path/to/book.epub path/to/project
 python scripts/ingest_pdf.py path/to/book.pdf path/to/project --pages-per-chapter 25 --pdf-postprocess auto
+python scripts/build_wiki.py path/to/book.txt path/to/project --backend lexical --provider none --dry-run
+python scripts/build_wiki.py path/to/book.html path/to/project --backend lexical --provider none --dry-run
+python scripts/build_wiki.py path/to/book.docx path/to/project --backend lexical --provider none --dry-run
 python scripts/ingest_book.py index path/to/project --backend lexical
 ```
+
+Use `--source-format` only for extensionless or incorrectly named files. PDF structure/OCR options are rejected for other formats. `--keep-front-matter` is limited to EPUB and DRM-free Kindle inputs. Every raw chapter carries a source-unit locator; each indexed evidence chunk adds its own raw line range, so a reader can distinguish the reading-unit location from the cited excerpt location.
 
 After indexing, a configured OpenAI-compatible provider can generate structured chapter interpretations and hierarchical book synthesis. The model returns JSON evidence references; the renderer creates deterministic Wikipedia-like Markdown pages and citations. The optional `cloud` install includes `json-repair`, so generation can repair common malformed model JSON (for example, missing commas) before validation. Responses that cannot be repaired still fail safely and leave a resumable failed checkpoint:
 
@@ -74,7 +89,7 @@ Use `--dry-run` to build a bounded, resumable plan without calling a model. Chec
 
 ## One-command build and wiki-first chat
 
-The complete build can be run from one PDF or EPUB. It imports immutable raw chapters, builds the selected index, resumes or creates the structured generation run, renders Markdown, writes `wiki/structure.json` and `wiki/log.md`, and checks the result. During generation, per-node request, parse/repair, reuse, and completion updates are written to stderr; checker JSON remains clean on stdout:
+The complete build accepts PDF, EPUB, MOBI/AZW/AZW3, TXT, DOC/DOCX, HTML, and HTM. It imports immutable raw chapters, builds the selected index, resumes or creates the structured generation run, renders Markdown, writes `wiki/structure.json` and `wiki/log.md`, and checks the result. During generation, per-node request, parse/repair, reuse, and completion updates are written to stderr; checker JSON remains clean on stdout:
 
 ```text
 python scripts/build_wiki.py path/to/book.epub path/to/project --provider openai-compatible --model gpt-4o-mini

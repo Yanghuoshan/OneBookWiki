@@ -62,4 +62,4 @@ VITE_ONEBOOKWIKI_BASE_URL=/books/sample-book npm run dev
 
 没有 SPA fallback 的静态主机无法直接刷新 `/book/<book-id>`，需要配置等价的 rewrite 规则。
 
-页面采用左侧阅读地图、中间 Markdown 正文、按需来源面板的布局。PDF 来源显示 PDF 物理页码；EPUB 来源显示章节、spine 和 href。旧的 `C5E8` 引用会作为兼容输入解析，但界面优先显示可读来源标签。
+页面采用左侧阅读地图、中间 Markdown 正文、按需来源面板的布局。来源面板分别显示阅读单元位置和证据摘录位置：PDF 显示物理页码，EPUB 显示章节、spine 和 href，TXT 显示源文本行，DOC/DOCX 显示段落，HTML 显示 anchor 或 block，Kindle 显示原始格式 section。旧的 `C5E8` 引用会作为兼容输入解析，但界面优先显示可读来源标签。

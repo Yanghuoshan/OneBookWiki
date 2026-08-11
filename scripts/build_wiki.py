@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a complete evidence-grounded book wiki from one PDF or EPUB."""
+"""Build a complete evidence-grounded book wiki from one supported source format."""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_wiki, resume_generation
-from onebookwiki.importers import import_epub, import_pdf
+from onebookwiki.importers import ImportOptions, detect_source_type, import_document
 from onebookwiki.providers import ProviderUnavailable
 from onebookwiki.rendering import render_artifacts
 from onebookwiki.checkpoints import CheckpointStore
@@ -43,10 +43,11 @@ def generation_options(args: argparse.Namespace) -> GenerationOptions:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", help="PDF or EPUB source file")
+    parser.add_argument("source", help="source file: PDF, EPUB, MOBI, AZW, AZW3, TXT, DOC, DOCX, HTML, or HTM")
     parser.add_argument("project_root")
     parser.add_argument("--backend", choices=("lexical", "bge-m3", "modelscope"), default="bge-m3")
     parser.add_argument("--book-title")
+    parser.add_argument("--source-format", choices=("PDF", "EPUB", "MOBI", "AZW", "AZW3", "TXT", "DOC", "DOCX", "HTML"), help="override source format detection")
     parser.add_argument("--pages-per-chapter", type=int)
     parser.add_argument("--chapter-count", type=int)
     parser.add_argument("--structure", choices=("auto", "bookmarks", "toc", "headings", "ranges"), default="auto")
@@ -79,37 +80,55 @@ def main(argv: list[str]) -> int:
     if not source.is_file():
         print(f"source not found: {source}", file=sys.stderr)
         return 1
-    suffix = source.suffix.lower()
-    if suffix not in {".pdf", ".epub"}:
-        print("source must be a .pdf or .epub file", file=sys.stderr)
+    try:
+        source_format = detect_source_type(source, args.source_format)
+    except ValueError as error:
+        print(f"source type error: {error}", file=sys.stderr)
+        return 1
+    pdf_only_requested = (
+        args.pages_per_chapter is not None
+        or args.chapter_count is not None
+        or args.structure != "auto"
+        or args.structure_min_confidence != 0.72
+        or args.structure_report is not None
+        or args.structure_manifest is not None
+        or args.pdf_postprocess != "auto"
+        or args.pdf_ocr != "off"
+        or args.pdf_ocr_dpi is not None
+        or args.pdf_ocr_confidence is not None
+    )
+    if source_format != "PDF" and pdf_only_requested:
+        print("PDF structure, OCR, and post-processing options may only be used with PDF input", file=sys.stderr)
+        return 1
+    if args.keep_front_matter and source_format not in {"EPUB", "MOBI", "AZW", "AZW3"}:
+        print("--keep-front-matter may only be used with EPUB or DRM-free Kindle input", file=sys.stderr)
         return 1
     try:
         if args.resume and not args.force:
             print("[1/4] resume: preserving existing imported raw chapters")
-        elif suffix == ".pdf":
-            print("[1/4] importing PDF")
-            report = Path(args.structure_report).resolve() if args.structure_report else None
-            imported = import_pdf(
+        else:
+            print(f"[1/4] importing {source_format}")
+            imported = import_document(
                 source,
                 root,
-                args.book_title,
-                args.pages_per_chapter,
-                args.chapter_count,
-                args.force,
-                structure=args.structure,
-                structure_min_confidence=args.structure_min_confidence,
-                structure_report=report,
-                max_unit_tokens=args.max_unit_tokens,
-                postprocess=args.pdf_postprocess,
-                structure_manifest=Path(args.structure_manifest).resolve() if args.structure_manifest else None,
-                pdf_ocr=args.pdf_ocr,
-                pdf_ocr_dpi=args.pdf_ocr_dpi,
-                pdf_ocr_confidence=args.pdf_ocr_confidence,
+                ImportOptions(
+                    title=args.book_title,
+                    force=args.force,
+                    keep_front_matter=args.keep_front_matter,
+                    pages_per_chapter=args.pages_per_chapter,
+                    chapter_count=args.chapter_count,
+                    structure=args.structure,
+                    structure_min_confidence=args.structure_min_confidence,
+                    structure_report=Path(args.structure_report).resolve() if args.structure_report else None,
+                    max_unit_tokens=args.max_unit_tokens,
+                    postprocess=args.pdf_postprocess,
+                    structure_manifest=Path(args.structure_manifest).resolve() if args.structure_manifest else None,
+                    pdf_ocr=args.pdf_ocr,
+                    pdf_ocr_dpi=args.pdf_ocr_dpi,
+                    pdf_ocr_confidence=args.pdf_ocr_confidence,
+                    source_format=args.source_format,
+                ),
             )
-            print(f"imported {len(imported)} raw chapter file(s)")
-        else:
-            print("[1/4] importing EPUB")
-            imported = import_epub(source, root, args.book_title, args.force, args.keep_front_matter)
             print(f"imported {len(imported)} raw chapter file(s)")
         print(f"[2/4] indexing with {args.backend}")
         if args.backend in {"bge-m3", "modelscope"}:
