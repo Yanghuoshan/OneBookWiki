@@ -112,7 +112,7 @@ def run_pipeline(
             # ---- Phase 3: Generate ----
             db_update_phase(conn, book_id, "generating")
 
-            from onebookwiki.generation import GenerationOptions, generate_wiki
+            from onebookwiki.generation import GenerationOptions, resume_generation
             from onebookwiki.providers import GenerationConfig
 
             gen_config = GenerationConfig.from_env()
@@ -123,7 +123,7 @@ def run_pipeline(
                 retries=4,
                 progress=lambda msg: print(f"[generate] {msg}", file=sys.stderr, flush=True),
             )
-            generate_wiki(book_dir, options)
+            resume_generation(book_dir, options)
 
             # Log generate success
             insert_operation_log(
