@@ -129,10 +129,16 @@ if _is_production and FRONTEND_DIST.is_dir():
     @app.middleware("http")
     async def spa_fallback(request: Request, call_next):
         path = request.url.path
-        # API, static routes, docs — let them through unchanged
-        if path.startswith(("/api", "/book/", "/assets", "/docs", "/openapi.json")):
+        # API, frontend assets, docs — let them through unchanged
+        if path.startswith(("/api", "/assets", "/docs", "/openapi.json")):
             return await call_next(request)
-        # Everything else → index.html (SPA handles client-side routing)
+        # /book/<id>/<file...> real file requests (wiki/*.json, *.md, covers) → StaticFiles;
+        # bare /book, /book/, and /book/<bookId> are SPA navigation routes → index.html
+        if path.startswith("/book/"):
+            rest = path[len("/book/"):]
+            if "/" in rest:  # deeper path → likely a file
+                return await call_next(request)
+        # Everything else (incl. /book, /book/, /book/<bookId>) → index.html
         index_path = FRONTEND_DIST / "index.html"
         if index_path.is_file():
             return FileResponse(index_path)
