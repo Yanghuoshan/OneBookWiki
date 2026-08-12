@@ -78,3 +78,104 @@ export type EvidenceIndex = {
   schema_version?: number;
   evidence: Record<string, EvidenceRecord>;
 };
+
+// ---- Book listing types ----
+
+export type BookPhase =
+  | "empty"
+  | "queued"
+  | "importing"
+  | "indexing"
+  | "generating"
+  | "rendering"
+  | "complete"
+  | "failed"
+  | "pending";
+
+export type BookSummary = {
+  id: string;
+  title: string;
+  author?: string;
+  format?: string;
+  source_name?: string;
+  source_hash?: string;
+  cover_path?: string;
+  phase: BookPhase;
+  page_count?: number;
+  chapter_count?: number;
+  description?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BookStatus = {
+  bookId: string;
+  title: string;
+  phase: BookPhase;
+  error?: string | null;
+};
+
+// ---- Admin types ----
+
+export type OperationLog = {
+  id: number;
+  book_id: string;
+  book_title?: string;
+  operation: string;
+  phase?: string;
+  status: string;
+  detail?: string;
+  created_at: string;
+};
+
+export type AdminStats = {
+  total_books: number;
+  complete_books: number;
+  failed_books: number;
+  processing_books: number;
+  pending_books: number;
+  total_pages: number;
+  total_chapters: number;
+  total_tokens: number;
+  recent_operations_24h: number;
+};
+
+export type TokenBookEntry = {
+  book_id: string;
+  title: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type TokenUsageSummary = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  book_count: number;
+  books: TokenBookEntry[];
+};
+
+export type TokenEntry = {
+  run_id?: string;
+  node_id?: string;
+  stage?: string;
+  attempt?: number;
+  provider?: string;
+  model?: string;
+  timestamp?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  status?: string;
+};
+
+export type TokenUsageDetail = {
+  book_id: string;
+  book_title: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  entries: TokenEntry[];
+};

@@ -13,6 +13,29 @@ Provides-Extra: cloud
 Requires-Dist: openai>=1.0; extra == "cloud"
 Requires-Dist: pymupdf>=1.24; extra == "cloud"
 Requires-Dist: json-repair>=0.30; extra == "cloud"
+Provides-Extra: pdf-ocr
+Requires-Dist: numpy>=1.26; extra == "pdf-ocr"
+Requires-Dist: paddleocr<4,>=3.0; extra == "pdf-ocr"
+Requires-Dist: paddlepaddle<4,>=3.0; extra == "pdf-ocr"
+Provides-Extra: text
+Requires-Dist: charset-normalizer>=3.3; extra == "text"
+Provides-Extra: docx
+Requires-Dist: python-docx>=1.1; extra == "docx"
+Provides-Extra: doc
+Requires-Dist: legacy-doc==0.2.1; extra == "doc"
+Requires-Dist: olefile>=0.47; extra == "doc"
+Provides-Extra: kindle
+Requires-Dist: mobi==0.4.1; extra == "kindle"
+Provides-Extra: imports
+Requires-Dist: charset-normalizer>=3.3; extra == "imports"
+Requires-Dist: python-docx>=1.1; extra == "imports"
+Requires-Dist: legacy-doc==0.2.1; extra == "imports"
+Requires-Dist: olefile>=0.47; extra == "imports"
+Requires-Dist: mobi==0.4.1; extra == "imports"
+Provides-Extra: server
+Requires-Dist: fastapi>=0.115; extra == "server"
+Requires-Dist: uvicorn[standard]>=0.32; extra == "server"
+Requires-Dist: python-multipart>=0.0.12; extra == "server"
 Provides-Extra: all
 Requires-Dist: tiktoken>=0.7; extra == "all"
 Requires-Dist: numpy>=1.26; extra == "all"
@@ -21,3 +44,13 @@ Requires-Dist: sentence-transformers>=3.0; extra == "all"
 Requires-Dist: openai>=1.0; extra == "all"
 Requires-Dist: pymupdf>=1.24; extra == "all"
 Requires-Dist: json-repair>=0.30; extra == "all"
+Requires-Dist: paddleocr<4,>=3.0; extra == "all"
+Requires-Dist: paddlepaddle<4,>=3.0; extra == "all"
+Requires-Dist: charset-normalizer>=3.3; extra == "all"
+Requires-Dist: python-docx>=1.1; extra == "all"
+Requires-Dist: legacy-doc==0.2.1; extra == "all"
+Requires-Dist: olefile>=0.47; extra == "all"
+Requires-Dist: mobi==0.4.1; extra == "all"
+Requires-Dist: fastapi>=0.115; extra == "all"
+Requires-Dist: uvicorn[standard]>=0.32; extra == "all"
+Requires-Dist: python-multipart>=0.0.12; extra == "all"

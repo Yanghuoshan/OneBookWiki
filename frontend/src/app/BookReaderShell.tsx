@@ -113,7 +113,7 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   return (
     <div className="reader-shell">
       <header className="topbar">
-        <div className="brand-mark">ONE<span>BOOK</span></div>
+        <div className="brand-mark" onClick={() => { window.location.href = '/'; }} style={{ cursor: 'pointer' }} title="Back to home">ONE<span>BOOK</span></div>
         <div className="book-heading"><span className="eyebrow">EVIDENCE-GROUNDED READING</span><h1>{structure.title}</h1></div>
         <div className="topbar-meta">{structure.pages.length} pages</div>
       </header>

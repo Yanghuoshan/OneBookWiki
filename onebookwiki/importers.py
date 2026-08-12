@@ -203,6 +203,83 @@ def _toc_lookup(nodes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _toc_entries_by_href(nodes: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Group all TOC entries by bare href, preserving per-fragment metadata."""
+    result: dict[str, list[dict[str, Any]]] = {}
+    for node in _flatten_outline(nodes):
+        href = str(node.get("href", ""))
+        if not href:
+            continue
+        result.setdefault(href, []).append(node)
+    return result
+
+
+def _extract_fragment_segments(html_source: str, fragments: list[str]) -> list[dict[str, Any]]:
+    """Split XHTML text content at each TOC fragment anchor point.
+
+    Returns one segment per fragment (plus a leading empty-fragment segment
+    for content before the first anchor).  Each segment carries the fragment
+    id and its extracted plain text.
+    """
+    target_ids: set[str] = set(fragments)
+
+    class _Splitter(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.segments: list[dict[str, Any]] = []
+            self._current_fragment = ""
+            self._pending: list[str] = []
+            self._skip = 0
+            self._block = {"p", "div", "section", "article", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "br", "tr"}
+            self._seen: set[str] = set()
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            tag = tag.lower()
+            if tag in {"script", "style", "svg", "nav"}:
+                self._skip += 1
+                return
+            if self._skip:
+                return
+            elem_id = dict(attrs).get("id", "")
+            if elem_id in target_ids and elem_id not in self._seen:
+                self._flush()
+                self._current_fragment = elem_id
+                self._seen.add(elem_id)
+            if tag in self._block:
+                self._pending.append("\n")
+
+        def handle_endtag(self, tag: str) -> None:
+            tag = tag.lower()
+            if tag in {"script", "style", "svg", "nav"} and self._skip:
+                self._skip -= 1
+            if not self._skip and tag in self._block:
+                self._pending.append("\n")
+
+        def handle_data(self, data: str) -> None:
+            if not self._skip:
+                self._pending.append(data)
+
+        def _flush(self) -> None:
+            if not self._pending:
+                return
+            text = html.unescape("".join(self._pending))
+            lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+            lines = [line for line in lines if line]
+            clean = "\n\n".join(lines).strip()
+            if clean:
+                self.segments.append({"fragment": self._current_fragment, "text": clean})
+            self._pending = []
+
+        def finalize(self) -> list[dict[str, Any]]:
+            self._flush()
+            return self.segments
+
+    splitter = _Splitter()
+    splitter.feed(html_source)
+    splitter.close()
+    return splitter.finalize()
+
+
 def parse_epub(path: Path, keep_front_matter: bool = False) -> dict[str, Any]:
     """Return ordered EPUB spine entries and metadata without writing files."""
     with zipfile.ZipFile(path) as archive:
@@ -239,6 +316,7 @@ def parse_epub(path: Path, keep_front_matter: bool = False) -> dict[str, Any]:
                 if toc_outline:
                     break
         toc_entries = _toc_lookup(toc_outline)
+        toc_by_href = _toc_entries_by_href(toc_outline)
         entries: list[dict[str, Any]] = []
         for spine_index, itemref in enumerate(_findall(spine, "itemref") if spine is not None else [], 1):
             item_id = itemref.attrib.get("idref")
@@ -247,22 +325,64 @@ def parse_epub(path: Path, keep_front_matter: bool = False) -> dict[str, Any]:
                 continue
             href_value, _, fragment = item["href"].partition("#")
             href = posixpath.normpath(posixpath.join(opf_dir, href_value))
-            body = html_to_text(_read_text(archive, href))
-            body_lines = [line.strip() for line in body.splitlines() if line.strip()]
-            toc_entry = toc_entries.get(href)
-            title = str(toc_entry.get("title")) if toc_entry else (body_lines[0] if body_lines else f"Reading unit {spine_index}")
-            if not body or (not keep_front_matter and spine_index == 1 and len(body.split()) < 40):
-                continue
-            entries.append({
-                "number": len(entries) + 1,
-                "title": title,
-                "href": href,
-                "fragment": str(toc_entry.get("fragment", fragment)) if toc_entry else fragment,
-                "spine": item_id or "",
-                "spine_index": spine_index,
-                "breadcrumb": list(toc_entry.get("breadcrumb") or [title]) if toc_entry else [title],
-                "text": body,
-            })
+            toc_for_href = toc_by_href.get(href, [])
+            # Collect distinct non-empty fragments from TOC entries pointing to
+            # this XHTML file.  When there are multiple distinct fragments the
+            # file carries several sub-chapters — split it at each anchor.
+            distinct_fragments: list[str] = list(dict.fromkeys(
+                e.get("fragment") for e in toc_for_href if e.get("fragment")
+            ))
+            if len(distinct_fragments) > 1:
+                raw_html = _read_text(archive, href)
+                segments = _extract_fragment_segments(raw_html, distinct_fragments)
+                for seg in segments:
+                    seg_frag = str(seg.get("fragment", ""))
+                    seg_text = str(seg.get("text", ""))
+                    if not seg_text.strip():
+                        continue
+                    matching_toc = next((e for e in toc_for_href if e.get("fragment") == seg_frag), None)
+                    if matching_toc:
+                        seg_title = str(matching_toc.get("title", ""))
+                        seg_breadcrumb = list(matching_toc.get("breadcrumb", [seg_title]))
+                    elif not seg_frag:
+                        parent_toc = next((e for e in toc_for_href if not e.get("fragment")), None)
+                        seg_title = str(parent_toc.get("title")) if parent_toc else ""
+                        seg_breadcrumb = list(parent_toc.get("breadcrumb", [seg_title])) if parent_toc else [seg_title]
+                    else:
+                        seg_title = ""
+                        seg_breadcrumb = [seg_title]
+                    if not seg_title:
+                        body_lines = [line.strip() for line in seg_text.splitlines() if line.strip()]
+                        seg_title = body_lines[0] if body_lines else f"Reading unit {spine_index}"
+                        seg_breadcrumb = [seg_title]
+                    entry_num = len(entries) + 1
+                    entries.append({
+                        "number": entry_num,
+                        "title": seg_title,
+                        "href": href,
+                        "fragment": seg_frag,
+                        "spine": item_id or "",
+                        "spine_index": spine_index,
+                        "breadcrumb": seg_breadcrumb,
+                        "text": seg_text,
+                    })
+            else:
+                body = html_to_text(_read_text(archive, href))
+                body_lines = [line.strip() for line in body.splitlines() if line.strip()]
+                toc_entry = toc_entries.get(href)
+                title = str(toc_entry.get("title")) if toc_entry else (body_lines[0] if body_lines else f"Reading unit {spine_index}")
+                if not body or (not keep_front_matter and spine_index == 1 and len(body.split()) < 40):
+                    continue
+                entries.append({
+                    "number": len(entries) + 1,
+                    "title": title,
+                    "href": href,
+                    "fragment": str(toc_entry.get("fragment", fragment)) if toc_entry else fragment,
+                    "spine": item_id or "",
+                    "spine_index": spine_index,
+                    "breadcrumb": list(toc_entry.get("breadcrumb") or [title]) if toc_entry else [title],
+                    "text": body,
+                })
         return {
             "metadata": metadata,
             "entries": entries,
@@ -1524,11 +1644,18 @@ def _epub_outline(
     toc_outline: list[dict[str, Any]],
     units: list[ImportedSourceUnit],
 ) -> list[ImportedSourceNode]:
-    """Map authored EPUB navigation to units without duplicating shared XHTML pages."""
-    units_by_href = {
-        str(unit.locator.to_dict().get("href", "")): unit
-        for unit in units
-    }
+    """Map authored EPUB navigation to units by (href, fragment).
+
+    When the TOC contains multiple sibling entries that share one XHTML file
+    but differ in fragment (e.g.  sub-chapter anchors inside a single spine
+    item), each entry maps to its own fragment-specific unit so every outline
+    node gets a distinct pageId.
+    """
+    units_by_href_fragment: dict[tuple[str, str], ImportedSourceUnit] = {}
+    for unit in units:
+        loc = unit.locator.to_dict()
+        key = (str(loc.get("href", "")), str(loc.get("fragment", "")))
+        units_by_href_fragment[key] = unit
     assigned_unit_ids: set[str] = set()
     position = [0]
 
@@ -1543,10 +1670,13 @@ def _epub_outline(
             if isinstance(child, dict)
         ]
         href = str(value.get("href", ""))
-        unit = units_by_href.get(href)
-        # Parent navigation entries often point to the first child XHTML item. The
-        # child must own that page so the rendered source tree has one destination.
-        unit_ids = [unit.id] if unit is not None and unit.id not in assigned_unit_ids else []
+        fragment = str(value.get("fragment", ""))
+        unit = units_by_href_fragment.get((href, fragment))
+        if unit is None and fragment:
+            # Fall back to a fragment-less unit when the TOC fragment does not
+            # exist in the XHTML (e.g.  a mis-referenced anchor).
+            unit = units_by_href_fragment.get((href, ""))
+        unit_ids = [unit.id] if unit is not None else []
         assigned_unit_ids.update(unit_ids)
         return ImportedSourceNode(
             id=node_id,

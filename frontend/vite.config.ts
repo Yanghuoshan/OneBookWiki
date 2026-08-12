@@ -3,6 +3,8 @@ import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Connect } from 'vite';
 import react from '@vitejs/plugin-react';
+import { request as httpRequest } from 'node:http';
+
 
 const booksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books');
 const defaultBookId = 'zhenshi';
@@ -10,6 +12,11 @@ const bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const contentTypes: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
 };
 
 type BookRequest = { bookId: string; relativePath: string[] };
@@ -55,6 +62,28 @@ function parseBookRequest(requestUrl: string): BookRequest | null {
     : { bookId: defaultBookId, relativePath: segments };
 }
 
+function apiProxyMiddleware(): Connect.NextHandleFunction {
+  return (req, res) => {
+    const targetUrl = req.url || '/';
+    const options = {
+      hostname: 'localhost',
+      port: 8000,
+      path: '/api' + targetUrl,
+      method: req.method,
+      headers: { ...req.headers, host: 'localhost:8000' },
+    };
+    const proxyReq = httpRequest(options, (proxyRes) => {
+      res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+      proxyRes.pipe(res);
+    });
+    proxyReq.on('error', () => {
+      res.statusCode = 502;
+      res.end('Bad Gateway');
+    });
+    req.pipe(proxyReq);
+  };
+}
+
 function bookStaticMiddleware(): Connect.NextHandleFunction {
   return (request, response, next) => {
     const requestUrl = (request as { url?: string }).url || '/';
@@ -76,15 +105,20 @@ function bookStaticMiddleware(): Connect.NextHandleFunction {
 }
 
 export default defineConfig({
-  plugins: [{
-    ...react(),
-    configureServer(server) {
-      server.middlewares.use('/book', bookStaticMiddleware());
+  plugins: [
+    react(),
+    {
+      name: 'onebookwiki-server',
+      configureServer(server) {
+        server.middlewares.use('/book', bookStaticMiddleware());
+        server.middlewares.use('/api', apiProxyMiddleware());
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use('/book', bookStaticMiddleware());
+        server.middlewares.use('/api', apiProxyMiddleware());
+      },
     },
-    configurePreviewServer(server) {
-      server.middlewares.use('/book', bookStaticMiddleware());
-    },
-  }],
+  ],
   server: {
     port: 5173,
     strictPort: false,

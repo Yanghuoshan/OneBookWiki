@@ -23,12 +23,18 @@ import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { request as httpRequest } from 'node:http';
 var booksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books');
 var defaultBookId = 'zhenshi';
 var bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 var contentTypes = {
     '.json': 'application/json; charset=utf-8',
     '.md': 'text/markdown; charset=utf-8',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
 };
 function isWithin(root, candidate) {
     var path = relative(root, candidate);
@@ -91,11 +97,38 @@ function bookStaticMiddleware() {
     };
 }
 export default defineConfig({
-    plugins: [__assign(__assign({}, react()), { configureServer: function (server) {
+    plugins: [
+        react(),
+        {
+            name: 'onebookwiki-server',
+            configureServer: function (server) {
                 server.middlewares.use('/book', bookStaticMiddleware());
-            }, configurePreviewServer: function (server) {
+                // Proxy /api to FastAPI backend
+                server.middlewares.use('/api', function (req, res) {
+                    var targetUrl = req.url || '/';
+                    var options = {
+                        hostname: 'localhost',
+                        port: 8000,
+                        path: '/api' + targetUrl,
+                        method: req.method,
+                        headers: __assign(__assign({}, req.headers), { host: 'localhost:8000' }),
+                    };
+                    var proxyReq = httpRequest(options, function (proxyRes) {
+                        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+                        proxyRes.pipe(res);
+                    });
+                    proxyReq.on('error', function () {
+                        res.statusCode = 502;
+                        res.end('Bad Gateway');
+                    });
+                    req.pipe(proxyReq);
+                });
+            },
+            configurePreviewServer: function (server) {
                 server.middlewares.use('/book', bookStaticMiddleware());
-            } })],
+            },
+        },
+    ],
     server: {
         port: 5173,
         strictPort: false,
