@@ -16,8 +16,8 @@ from typing import Any, Iterable
 
 @dataclass(frozen=True)
 class PdfStructureOcrConfig:
-    detector_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_det"
-    recognizer_model: str = "D:/models/PaddleOCR/PP-OCRv5_mobile_rec"
+    detector_model: str = ""
+    recognizer_model: str = ""
     device: str | None = None
     batch_size: int = 1
     dpi: int = 180

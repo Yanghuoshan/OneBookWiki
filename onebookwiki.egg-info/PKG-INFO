@@ -3,6 +3,7 @@ Name: onebookwiki
 Version: 0.1.0
 Summary: Evidence-grounded, retrieval-first analysis of a single book
 Requires-Python: >=3.10
+License-File: LICENSE
 Provides-Extra: rag
 Requires-Dist: tiktoken>=0.7; extra == "rag"
 Requires-Dist: numpy>=1.26; extra == "rag"
@@ -36,6 +37,7 @@ Provides-Extra: server
 Requires-Dist: fastapi>=0.115; extra == "server"
 Requires-Dist: uvicorn[standard]>=0.32; extra == "server"
 Requires-Dist: python-multipart>=0.0.12; extra == "server"
+Requires-Dist: python-dotenv>=1.0; extra == "server"
 Provides-Extra: all
 Requires-Dist: tiktoken>=0.7; extra == "all"
 Requires-Dist: numpy>=1.26; extra == "all"
@@ -54,3 +56,5 @@ Requires-Dist: mobi==0.4.1; extra == "all"
 Requires-Dist: fastapi>=0.115; extra == "all"
 Requires-Dist: uvicorn[standard]>=0.32; extra == "all"
 Requires-Dist: python-multipart>=0.0.12; extra == "all"
+Requires-Dist: python-dotenv>=1.0; extra == "all"
+Dynamic: license-file

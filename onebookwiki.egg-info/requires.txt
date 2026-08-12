@@ -17,6 +17,7 @@ mobi==0.4.1
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.12
+python-dotenv>=1.0
 
 [cloud]
 openai>=1.0
@@ -57,6 +58,7 @@ faiss-cpu>=1.8
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.12
+python-dotenv>=1.0
 
 [text]
 charset-normalizer>=3.3

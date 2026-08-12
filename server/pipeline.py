@@ -3,14 +3,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 import threading
 from pathlib import Path
-
-# Ensure the project root is on sys.path so we can import onebookwiki modules
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
 
 _pipeline_semaphore = threading.Semaphore(2)
 
@@ -103,9 +97,8 @@ def run_pipeline(
             # ---- Phase 2: Index ----
             db_update_phase(conn, book_id, "indexing")
 
-            # Import the indexing functions from the scripts
-            sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
-            from ingest_book import index_cloud as do_index  # type: ignore[import-not-found]
+            # Import the indexing functions from the CLI package
+            from onebookwiki.cli.ingest_book import index_cloud as do_index  # type: ignore[import-not-found]
 
             do_index(book_dir, backend)
 

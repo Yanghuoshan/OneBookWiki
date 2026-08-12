@@ -1,3 +1,4 @@
+LICENSE
 README.md
 pyproject.toml
 onebookwiki/__init__.py
@@ -25,8 +26,19 @@ onebookwiki/wiki_retrieval.py
 onebookwiki.egg-info/PKG-INFO
 onebookwiki.egg-info/SOURCES.txt
 onebookwiki.egg-info/dependency_links.txt
+onebookwiki.egg-info/entry_points.txt
 onebookwiki.egg-info/requires.txt
 onebookwiki.egg-info/top_level.txt
+onebookwiki/cli/__init__.py
+onebookwiki/cli/build_wiki.py
+onebookwiki/cli/chat_book.py
+onebookwiki/cli/check_book.py
+onebookwiki/cli/generate_wiki.py
+onebookwiki/cli/ingest_book.py
+onebookwiki/cli/ingest_epub.py
+onebookwiki/cli/ingest_pdf.py
+onebookwiki/cli/query_book.py
+onebookwiki/cli/report_cost.py
 tests/test_check_book.py
 tests/test_chunking.py
 tests/test_cloud_embeddings.py

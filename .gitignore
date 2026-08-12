@@ -1,6 +1,36 @@
+# Data
 books/
 examples/
+
+# Environment
 .env
 .env.*
-frontend/node_modules/
+
+# Python
+*.pyc
+*.pyo
 __pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Vite
+.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db-journal
+*.db-wal

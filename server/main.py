@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from server.database import init_db, migrate_existing_books, migrate_token_usage
 from server.routes import books, upload
@@ -61,6 +62,10 @@ app.include_router(books.router)
 from server.routes import admin  # noqa: E402
 
 app.include_router(admin.router)
+
+# Serve book static files (wiki pages, covers, etc.)
+if BOOKS_ROOT.is_dir():
+    app.mount("/book", StaticFiles(directory=str(BOOKS_ROOT), html=False), name="book")
 
 @app.post("/api/books/{book_id}/process")
 def retry_processing_endpoint(

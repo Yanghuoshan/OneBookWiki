@@ -1,172 +1,378 @@
 # OneBookWiki
 
-OneBookWiki is a retrieval-first Agent Skill for structured interpretation of one long book. It combines an immutable chapter archive and readable Markdown analysis with a persistent local chunk index, so later questions retrieve only relevant evidence instead of sending the whole book to an LLM.
-
-## Design
+OneBookWiki 是一个基于检索优先策略的结构化书籍分析工具。它将书籍按章节拆分为不可变存档，建立持久化本地索引，通过 LLM 生成结构化维基页面，并提供 Web 阅读器和 REST API。
 
 ```text
-raw/chapters/  ->  deterministic chunks + line metadata  ->  .onebookwiki/
-      \->  wiki/chapters, themes, concepts, arguments, review
+raw/chapters/  →  deterministic chunks + line metadata  →  .onebookwiki/
+      \→  wiki/chapters, themes, concepts, arguments, review
 ```
 
-The raw chapter files are the source of truth. The Markdown wiki is the curated interpretation. The derived index can be rebuilt. The default vector backend is local `BAAI/bge-m3` through SentenceTransformers; use `--backend lexical` for dependency-free retrieval or `--backend modelscope` for the optional remote endpoint. Queries can also fuse lexical and vector candidates with deterministic reciprocal-rank fusion, then apply a local query-aware reranker before bounded context assembly.
+原始章节文件是唯一事实来源，Markdown 维基是结构化解读，派生索引可以随时重建。
 
-## Local BGE-M3 embeddings and PDFs
+---
 
-Install the local embedding dependency, download `BAAI/bge-m3` once or point the configuration to a local model directory, then build the vector index. SentenceTransformers selects an available device by default; set `ONEBOOKWIKI_BGE_M3_DEVICE=cpu` or `cuda` to override it:
+## 快速启动
 
-```text
+完整 pipeline：**导入源文件 → 向量索引 → LLM 生成维基 → 渲染 Markdown**。其中索引依赖嵌入模型，生成依赖大模型——两者必须配置其一才能跑通。
+
+### 1. 安装
+
+```bash
+git clone <repo-url>
+cd onebookwiki
+pip install -e ".[server,rag,local-embeddings]"
+```
+
+### 2. 配置嵌入模型
+
+Pipeline 默认使用本地 BGE-M3。模型首次运行自动下载到 `~/.cache/huggingface/`，也可以手动指定已有模型路径：
+
+```bash
+# 使用 HuggingFace 默认路径（首次自动下载，约 2GB）
+export ONEBOOKWIKI_BGE_M3_MODEL=BAAI/bge-m3
+
+# 或指定本地已下载的模型目录
+export ONEBOOKWIKI_BGE_M3_MODEL=/path/to/models/bge-m3
+```
+
+如不想部署本地模型，可用 ModelScope 云端嵌入替代：
+
+```bash
+export MODELSCOPE_API_KEY=your-token
+# 构建时加 --backend modelscope
+```
+
+或使用纯关键词检索（无嵌入模型依赖，但检索质量较低）：
+
+```bash
+# 构建时加 --backend lexical
+```
+
+### 3. 配置大模型
+
+生成维基页面需要 OpenAI 兼容接口。配置 API 密钥和模型：
+
+```bash
+export ONEBOOKWIKI_LLM_PROVIDER=openai-compatible
+export ONEBOOKWIKI_LLM_API_KEY=your-api-key
+export ONEBOOKWIKI_LLM_MODEL=gpt-4o-mini
+export ONEBOOKWIKI_LLM_BASE_URL=https://api.openai.com/v1   # 可替换为任意兼容端点
+```
+
+仅做检索、不做生成时加 `--provider none`，无需配置大模型。
+
+### 4. 构建
+
+```bash
+onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
+```
+
+支持的源格式：PDF、EPUB、MOBI/AZW/AZW3、TXT、DOC/DOCX、HTML。
+
+PDF 默认从书签/目录/标题自动检测章节边界；如需手动控制分章，可使用 `--pages-per-chapter` 或 `--structure-manifest`。
+
+### 5. 启动服务
+
+```bash
+# 后端 API (Linux/macOS)    |  Windows PowerShell
+./start.sh                   |  .\start.ps1
+
+# 前端阅读器（另开终端）
+cd frontend && npm install && npm run dev -- --host 127.0.0.1
+```
+
+浏览器打开 `http://127.0.0.1:5173/book`，上传页面 `http://127.0.0.1:5173/admin`。
+
+### Docker 一键部署
+
+```bash
+docker compose up -d
+```
+
+### 可选：PDF OCR 辅助
+
+对于缺少文字层的扫描版 PDF，可安装本地 PP-OCRv5 辅助结构分析。模型需提前下载到本地目录：
+
+```bash
+pip install -e ".[pdf-ocr]"
+# 还需安装平台对应的 PaddlePaddle CPU/GPU 包
+
+export ONEBOOKWIKI_PDF_OCR_DET_MODEL=/path/to/PaddleOCR/PP-OCRv5_mobile_det
+export ONEBOOKWIKI_PDF_OCR_REC_MODEL=/path/to/PaddleOCR/PP-OCRv5_mobile_rec
+
+onebookwiki-build scan.pdf ./books/my-book --pdf-ocr assist --provider openai-compatible --model gpt-4o-mini
+```
+
+OCR 仅在 PDF 原生文字层缺失时辅助结构判定，不会替换原始章节文本。Windows 上 PaddlePaddle 安装较复杂，推荐用 Docker 或 WSL2。
+
+---
+
+## 设计
+
+默认向量后端是本地的 `BAAI/bge-m3`（通过 SentenceTransformers）；使用 `--backend lexical` 进行无依赖的关键词检索，或 `--backend modelscope` 使用远程嵌入服务。查询可融合词汇和向量候选结果，使用倒数排名融合（RRF），然后在上下文组装前应用本地查询感知重排序器。
+
+## 本地 BGE-M3 嵌入与 PDF
+
+安装本地嵌入依赖，下载一次 `BAAI/bge-m3` 或将配置指向本地模型目录，然后构建向量索引。SentenceTransformers 默认自动选择设备；通过环境变量覆盖：
+
+```bash
 pip install -e ".[local-embeddings]"
-set ONEBOOKWIKI_BGE_M3_MODEL=D:/models/BAAI/bge-m3
-set ONEBOOKWIKI_BGE_M3_DEVICE=cuda
-python scripts/ingest_pdf.py "D:/workspace/deepwiki4book/Fou Ren - Aleksandr Zvezdov.pdf" D:/books/fou-ren --pages-per-chapter 25
-python scripts/ingest_book.py index D:/books/fou-ren
-python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么？" --retrieval-only
+
+# Linux / macOS
+export ONEBOOKWIKI_BGE_M3_MODEL=BAAI/bge-m3
+export ONEBOOKWIKI_BGE_M3_DEVICE=cuda
+
+# Windows PowerShell
+$env:ONEBOOKWIKI_BGE_M3_MODEL = "BAAI/bge-m3"
+$env:ONEBOOKWIKI_BGE_M3_DEVICE = "cuda"
+
+onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
+onebookwiki-ingest index ./books/my-book
+onebookwiki-query ./books/my-book "这本书的核心论点是什么？"
 ```
 
-BGE-M3 vectors are persisted at `<book>/.onebookwiki/vectors.json`; unchanged chapters are reused only when the raw content, chunk profile, backend, and configured model all match. The default chunk profile is `400/60/520` tokens for Chinese/CJK and `500/75/650` for English (target/overlap/hard maximum). Re-run the index command after changing the chunk profile, switching from ModelScope, or changing the model path so derived vectors are rebuilt with one consistent identity.
+BGE-M3 向量持久化在 `<book>/.onebookwiki/vectors.json`；仅当原始内容、分块配置、后端和模型全部匹配时才复用未变章节。默认分块配置为中文/CJK `400/60/520` 令牌，英文 `500/75/650`（目标/重叠/硬上限）。修改分块配置、切换后端或更改模型路径后需重新运行索引命令。
 
-## ModelScope embeddings
+## ModelScope 嵌入
 
-To use the optional remote ModelScope backend instead, install the cloud integrations, set the ModelScope token outside source control, and select `--backend modelscope`:
+使用可选远程 ModelScope 后端，安装云集成，在源码控制之外设置 token：
 
-```text
+```bash
 pip install -e ".[cloud]"
-set MODELSCOPE_API_KEY=your-token                 # PowerShell: $env:MODELSCOPE_API_KEY="your-token"
-python scripts/ingest_pdf.py "D:/workspace/deepwiki4book/Fou Ren - Aleksandr Zvezdov.pdf" D:/books/fou-ren --pages-per-chapter 25
-python scripts/ingest_book.py index D:/books/fou-ren --backend modelscope
-python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么？" --backend modelscope --retrieval-only
-# Hybrid retrieval: lexical candidates + ModelScope vectors, then local reranking.
-python scripts/query_book.py D:/books/fou-ren "这本书的核心论点是什么？" --retrieval hybrid --generate --provider openai-compatible --max-output-tokens 512
+
+# Linux / macOS
+export MODELSCOPE_API_KEY=your-token
+
+# Windows PowerShell
+$env:MODELSCOPE_API_KEY = "your-token"
+
+onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
+onebookwiki-ingest index ./books/my-book --backend modelscope
+onebookwiki-query ./books/my-book "这本书的核心论点是什么？" --backend modelscope
+
+# 混合检索：词汇候选 + ModelScope 向量 + 本地重排序 + LLM 回答
+onebookwiki-query ./books/my-book "这本书的核心论点是什么？" \
+  --retrieval hybrid --generate --provider openai-compatible --max-output-tokens 512
 ```
 
-The cloud backend sends changed chunk text to `https://api-inference.modelscope.cn/v1` using `Qwen/Qwen3-Embedding-8B`. Vectors are persisted at `<book>/.onebookwiki/vectors.json`; a chapter is reused only when its raw content, chunk profile, provider, and model all match. The token is read only from `MODELSCOPE_API_KEY` (or `ONEBOOKWIKI_EMBEDDING_API_KEY`) and is never stored in the manifest, logs, or source files. Copy `.env.example` for the variable names, but do not commit a real credential.
+云后端将变更的分块文本发送到 `https://api-inference.modelscope.cn/v1`，使用 `Qwen/Qwen3-Embedding-8B`。Token 仅从 `MODELSCOPE_API_KEY`（或 `ONEBOOKWIKI_EMBEDDING_API_KEY`）读取，绝不存储在 manifest、日志或源码文件中。复制 `.env.example` 查看变量名称。
 
-`ingest_pdf.py` preserves PDF page boundaries as Markdown headings. Its simple page-count splitting is deterministic but is not semantic chapter detection; pass `--pages-per-chapter` conservatively, then rename/split the resulting raw files after checking the book's table of contents.
+## 源格式导入
 
-PDF import first tries native bookmarks, printed contents, and page-top headings before it falls back to ranges. By default it does not perform OCR. For a known unusual layout, pass `--structure-manifest manifests/pdf/<book>.json` (or `--manifest`) explicitly. A rules-only manifest contributes marker, row-format, title, and heading hints but still requires automatic TOC/heading alignment. Only a manifest with validated physical `units` selects the manual `manifest` method. The import snapshots an accepted manifest under `.onebookwiki/structure-manifest.json` and records matching provenance in both `source.json` and `structure-report.json`; a manifest merely present in the repository is never auto-loaded.
+所有支持的源格式在解析后共享一个结构化的物化合约：原始章节、schema-v3 `source.json`、源单元定位器、分块证据定位器、索引、生成、渲染和检查。PDF 保留其原生布局/OCR 感知路径；EPUB 保留书脊、目录、href 和片段溯源。
 
-When native structure evidence is missing or low-confidence, opt into the local-only PP-OCRv5 mobile structure assistant with `--pdf-ocr assist`. It renders only a small prioritized page set, prints the trigger and adoption decision to the terminal, and records candidate/processed/failed pages in the reports. It never replaces native PDF text in raw chapters, never performs semantic cleanup, and never downloads models at runtime. Install the optional `pdf-ocr` extra plus the platform-specific CPU PaddlePaddle package, then set local model directories in `.env` (see `.env.example`). Models may be prepared before execution using `hf-mirror.com`, but runtime reads only the configured local directories. Re-import with `--force` and reindex after changing OCR settings or models.
-
-For PDFs that already contain an OCR-generated text layer, PDF import applies conservative, coordinate-based cleanup by default before it writes raw chapters: `--pdf-postprocess auto` removes corroborated page-edge headers/footers and isolated page labels, normalizes Unicode/spacing, repairs safe English line-wrap hyphens, restores paragraphs, and orders clear two-column pages. It does **not** run OCR, an LLM, a spelling corrector, Chinese segmentation, or Traditional/Simplified conversion. `analyse_pdf()` still derives the outline from the native extracted view, so this cleanup does not change chapter boundaries; the processed view is only used for raw/RAG text after those boundaries are fixed. Use `--pdf-postprocess off` to retain the unmodified text layer or `--pdf-postprocess strict` to retain a page if a conservative transformation would empty it. Complex tables, footnotes, sidebars, and mixed layouts are kept conservatively rather than inferred. Changing this setting changes raw chapter text, so reimport with `--force` before reindexing.
-
-## Source import and generation
-
-All supported source formats share one structured materialization contract after format-specific parsing: raw chapters, schema-v3 `source.json`, source-unit locators, chunk evidence locators, indexing, generation, rendering, and checking. PDF retains its native layout/OCR-aware path; EPUB retains spine, TOC, href, and fragment provenance.
-
-| Input | Parser and primary locator | Installation / limitation |
+| 输入 | 解析器与主定位器 | 安装 / 限制 |
 | --- | --- | --- |
-| PDF | Native PDF layout, physical pages | `.[cloud]` for PyMuPDF |
-| EPUB | Standard-library ZIP/XML spine and TOC | No extra dependency |
-| HTML/HTM | Standard-library `HTMLParser`, anchors/blocks | No extra dependency |
-| TXT | Deterministic headings and source lines | `.[text]` improves legacy encoding detection |
-| DOCX | Ordered paragraphs/tables and Heading styles | `.[docx]` |
-| DOC | In-process text-only extraction, inferred paragraphs | `.[doc]`; layout and tables are not preserved |
-| MOBI/AZW/AZW3 | DRM-free extracted EPUB/HTML payload | `.[kindle]` installs GPL-3.0-only `mobi`; assess that license before use. No DRM removal or bypass is supported |
+| PDF | 原生 PDF 布局，物理页面 | `.[cloud]`（PyMuPDF） |
+| EPUB | 标准库 ZIP/XML 书脊和目录 | 无额外依赖 |
+| HTML/HTM | 标准库 `HTMLParser`，锚点/块 | 无额外依赖 |
+| TXT | 确定性标题和源行 | `.[text]` 改进旧编码检测 |
+| DOCX | 有序段落/表格和标题样式 | `.[docx]` |
+| DOC | 进程内纯文本提取，推断段落 | `.[doc]`；不保留布局和表格 |
+| MOBI/AZW/AZW3 | 无 DRM 提取的 EPUB/HTML 载荷 | `.[kindle]` 安装 GPL-3.0-only `mobi`；使用前请评估该许可证。不支持 DRM 移除 |
 
-```text
-python scripts/ingest_epub.py path/to/book.epub path/to/project
-python scripts/ingest_pdf.py path/to/book.pdf path/to/project --pages-per-chapter 25 --pdf-postprocess auto
-python scripts/build_wiki.py path/to/book.txt path/to/project --backend lexical --provider none --dry-run
-python scripts/build_wiki.py path/to/book.html path/to/project --backend lexical --provider none --dry-run
-python scripts/build_wiki.py path/to/book.docx path/to/project --backend lexical --provider none --dry-run
-python scripts/ingest_book.py index path/to/project --backend lexical
+```bash
+onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.txt ./books/my-book --backend lexical --provider none --dry-run
+onebookwiki-build book.docx ./books/my-book --backend lexical --provider none --dry-run
+
+# 分步执行
+onebookwiki-ingest-epub book.epub ./books/my-book
+onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
+onebookwiki-ingest index ./books/my-book --backend lexical
+onebookwiki-generate all ./books/my-book --provider openai-compatible --model gpt-4o-mini
 ```
 
-Use `--source-format` only for extensionless or incorrectly named files. PDF structure/OCR options are rejected for other formats. `--keep-front-matter` is limited to EPUB and DRM-free Kindle inputs. Every raw chapter carries a source-unit locator; each indexed evidence chunk adds its own raw line range, so a reader can distinguish the reading-unit location from the cited excerpt location.
+使用 `--source-format` 仅用于无扩展名或命名错误的文件。PDF 结构/OCR 选项在其他格式会被拒绝。`--keep-front-matter` 仅限于 EPUB 和无 DRM 的 Kindle 输入。
 
-After indexing, a configured OpenAI-compatible provider can generate structured chapter interpretations and hierarchical book synthesis. The model returns JSON evidence references; the renderer creates deterministic Wikipedia-like Markdown pages and citations. The optional `cloud` install includes `json-repair`, so generation can repair common malformed model JSON (for example, missing commas) before validation. Responses that cannot be repaired still fail safely and leave a resumable failed checkpoint:
+## 维基生成与对话
 
-```text
-python scripts/generate_wiki.py all path/to/project --provider openai-compatible --model gpt-4o-mini
-python scripts/generate_wiki.py status path/to/project
-python scripts/generate_wiki.py resume path/to/project
-python scripts/report_cost.py path/to/project --json
-python scripts/chat_book.py path/to/project "这本书的核心论点是什么？" --provider openai-compatible
+索引完成后，配置的 OpenAI 兼容提供商可以生成结构化章节解读和层级化书籍综合。模型返回 JSON 证据引用；渲染器创建确定性的维基百科风格 Markdown 页面和引用。可选的 `cloud` 安装包含 `json-repair`，可在验证前修复常见的模型 JSON 格式错误：
+
+```bash
+# 生成维基
+onebookwiki-generate all ./books/my-book --provider openai-compatible --model gpt-4o-mini
+onebookwiki-generate status ./books/my-book
+onebookwiki-generate resume ./books/my-book
+onebookwiki-cost ./books/my-book --json
+
+# 对话查询
+onebookwiki-chat ./books/my-book "这本书的核心论点是什么？" --provider openai-compatible
+onebookwiki-chat ./books/my-book --interactive --provider openai-compatible --model gpt-4o-mini
 ```
 
-Use `--dry-run` to build a bounded, resumable plan without calling a model. Checkpoints and generated JSON artifacts live under `.onebookwiki/`; usage is append-only in `usage.jsonl`. Set `ONEBOOKWIKI_INPUT_USD_PER_1M` and `ONEBOOKWIKI_OUTPUT_USD_PER_1M` to enable cost estimates. Missing provider usage or prices is reported as estimated/unknown rather than fabricated. Raw chapters remain the source of truth and are never replaced by generation.
+使用 `--dry-run` 构建有界的可恢复计划而不调用模型。检查点和生成的 JSON 工件位于 `.onebookwiki/` 下；使用量以追加模式记录在 `usage.jsonl` 中。
 
-## One-command build and wiki-first chat
+## 一键构建
 
-The complete build accepts PDF, EPUB, MOBI/AZW/AZW3, TXT, DOC/DOCX, HTML, and HTM. It imports immutable raw chapters, builds the selected index, resumes or creates the structured generation run, renders Markdown, writes `wiki/structure.json` and `wiki/log.md`, and checks the result. During generation, per-node request, parse/repair, reuse, and completion updates are written to stderr; checker JSON remains clean on stdout:
-
-```text
-python scripts/build_wiki.py path/to/book.epub path/to/project --provider openai-compatible --model gpt-4o-mini
-python scripts/build_wiki.py path/to/book.pdf path/to/project --pages-per-chapter 25 --provider openai-compatible --model gpt-4o-mini
-python scripts/build_wiki.py path/to/book.epub path/to/project --resume --provider openai-compatible --model gpt-4o-mini
-# Use --backend lexical for no local model, or --backend modelscope for the remote embedding service.
+```bash
+onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.epub ./books/my-book --resume --provider openai-compatible --model gpt-4o-mini
+# 使用 --backend lexical 无需本地模型，或 --backend modelscope 使用远程嵌入服务
 ```
 
-The resulting organization follows the wiki pattern:
+构建后的目录结构：
 
 ```text
-raw/chapters/                 immutable source
-.onebookwiki/                 rebuildable chunks, vectors, artifacts, checkpoints, usage
-wiki/book.md                  book overview
-wiki/index.md                 chapter reading map and navigation
-wiki/chapters/*.md            compiled chapter articles
-wiki/structure.json           canonical page/section/related-page graph
-wiki/log.md                   build/operation log
+raw/chapters/                 不可变源文件
+.onebookwiki/                 可重建的分块、向量、工件、检查点、使用量
+wiki/book.md                  书籍概览
+wiki/index.md                 章节阅读导航
+wiki/chapters/*.md            编译后的章节文章
+wiki/structure.json           规范化的页面/章节/关联页面图
+wiki/log.md                   构建/操作日志
 ```
 
-`chat_book.py` is wiki-first by default. It retrieves in this order: rendered wiki pages, structured JSON artifacts, then raw lexical/vector/hybrid evidence. Wiki text provides navigation and synthesis; raw evidence remains the factual authority:
+## 命令参考
 
-```text
-python scripts/chat_book.py path/to/project "这本书的核心论点是什么？" --retrieval hybrid --provider openai-compatible --model gpt-4o-mini
-python scripts/chat_book.py path/to/project "列出第一章的关键概念" --retrieval-only
-python scripts/chat_book.py path/to/project --interactive --provider openai-compatible --model gpt-4o-mini
+```bash
+onebookwiki-build        # 完整管线：导入 → 索引 → 生成 → 渲染 → 检查
+onebookwiki-generate     # 生成维基页面
+onebookwiki-ingest       # 构建索引（词汇或向量）
+onebookwiki-ingest-epub  # EPUB 导入
+onebookwiki-ingest-pdf   # PDF 导入
+onebookwiki-query        # 检索证据
+onebookwiki-chat         # 维基优先对话
+onebookwiki-check        # 一致性检查
+onebookwiki-cost         # 成本报告
 ```
 
-Use `--no-wiki` or `--no-artifact-context` to narrow the source layers. Use `--max-wiki-pages`, `--max-artifacts`, `--max-raw-per-chapter`, and `--max-tokens` to bound context. `wiki/structure.json` uses page IDs, sections, paths and related pages so it can be adapted to a future wiki UI without changing the book domain model.
+所有命令支持 `--help` 查看详细参数。
 
-## Commands
+---
 
-```text
-python scripts/ingest_book.py index path/to/book --backend lexical
-python scripts/query_book.py path/to/book "What is the central argument?" --retrieval-only
-python scripts/check_book.py path/to/book
-python scripts/check_book.py path/to/book --json
-python -m unittest discover -s tests -v
-```
+## 配置
 
-Use one Markdown/text file per chapter where possible. Do not ingest one giant book file: chapter boundaries enable incremental updates, chapter filtering, summaries, and smaller prompts. `query_book.py` enforces a context token budget, removes duplicate chunks, and limits the number of chunks per chapter. `--max-tokens` remains the hard retrieved-evidence budget; `--max-output-tokens` is a separate answer budget. Generation uses only the assembled evidence, cites chapter/source/line metadata, and must state when the evidence is insufficient. Set `ONEBOOKWIKI_LLM_CONTEXT_WINDOW` when the generation endpoint has a known prompt limit so evidence is reduced before the request.
+### 环境变量
+
+复制 `.env.example` 到 `.env` 并编辑。主要变量：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `ONEBOOKWIKI_LLM_PROVIDER` | LLM 提供商 | `openai-compatible` |
+| `ONEBOOKWIKI_LLM_API_KEY` | LLM API 密钥 | — |
+| `ONEBOOKWIKI_LLM_MODEL` | LLM 模型名称 | `gpt-4o-mini` |
+| `ONEBOOKWIKI_LLM_BASE_URL` | LLM API 地址 | `https://api.openai.com/v1` |
+| `ONEBOOKWIKI_LLM_TIMEOUT` | 请求超时(秒) | `60` |
+| `ONEBOOKWIKI_LLM_CONCURRENCY` | 并发数 | `1` |
+| `ONEBOOKWIKI_BGE_M3_MODEL` | BGE-M3 模型路径 | `BAAI/bge-m3` |
+| `ONEBOOKWIKI_BGE_M3_DEVICE` | 推理设备 | 自动 |
+| `ONEBOOKWIKI_EMBEDDING_BASE_URL` | 嵌入 API 地址 | ModelScope 默认 |
+| `MODELSCOPE_API_KEY` | ModelScope API 密钥 | — |
+| `ONEBOOKWIKI_PORT` | 服务端口 | `8000` |
+| `ONEBOOKWIKI_HOST` | 服务地址 | `0.0.0.0` |
+| `ONEBOOKWIKI_BOOKS_ROOT` | 书籍存储目录 | `./books` |
+
+---
 
 ## 前端阅读器
 
-前端位于 `frontend/`，是一个独立的 React/Vite 阅读器。启动前，请先为目标书籍生成 `wiki/structure.json`、Markdown 页面和 `wiki/evidence.json`；书籍目录放在 `books/<book-id>/` 下。建议使用当前 Node.js LTS 版本。
+前端位于 `frontend/`，是一个独立的 React/Vite 阅读器，连接 FastAPI 后端。
 
-在 PowerShell 中启动开发服务器：
+### 开发模式
 
-```powershell
-cd D:\workspace\deepwiki4book\onebookwiki\frontend
+```bash
+cd frontend
 npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-启动后在浏览器打开：
+浏览器访问：
 
 ```text
-http://127.0.0.1:5173/book                  # 默认书籍 books/zhenshi
-http://127.0.0.1:5173/book/zhenshi          # 指定书籍
-http://127.0.0.1:5173/book/aideduo          # 另一本已生成的书籍
-http://127.0.0.1:5173/book/aideduo?page=... # 直接打开 structure.json 中的页面 ID
+http://127.0.0.1:5173/book                  # 默认书籍
+http://127.0.0.1:5173/book/my-book          # 指定书籍
+http://127.0.0.1:5173/book/my-book?page=... # 直接打开特定页面
+http://127.0.0.1:5173/admin                 # 管理后台（上传、处理状态）
 ```
 
-`<book-id>` 只能包含字母、数字、`_` 和 `-`，并且必须对应 `books/` 下的目录。开发服务器会从 `books/<book-id>/wiki/` 读取 JSON 和 Markdown 文件。
+### 生产构建
 
-构建生产版本并在本机预览：
-
-```powershell
-cd D:\workspace\deepwiki4book\onebookwiki\frontend
-npm run build
+```bash
+cd frontend
+npm run build   # 输出到 frontend/dist/
 npm run preview -- --host 127.0.0.1
 ```
 
-`npm run build` 只会生成 `frontend/dist/`，不会复制 `books/`。部署时还需要发布书籍的 `books/<book-id>/wiki/` 静态文件，并将 `/book`、`/book/<book-id>` 等页面请求重写到 `frontend/dist/index.html`；不要重写 `/book/<book-id>/wiki/...`，这些请求必须返回实际的 JSON 或 Markdown 文件。
+部署时需要同时发布 `frontend/dist/` 和后端 API 服务。通过 FastAPI 的 `/book` 静态挂载或 Nginx 反向代理提供书籍文件。
 
-更多路由和部署配置请参见 [`frontend/README.md`](frontend/README.md)。
+更多路由和部署配置详见 [`frontend/README.md`](frontend/README.md)。
+
+---
+
+## 后端 API
+
+启动 FastAPI 服务：
+
+```bash
+# Linux / macOS
+./start.sh
+
+# Windows PowerShell
+.\start.ps1
+
+# Docker
+docker compose up -d
+```
+
+服务端提供以下功能：
+
+- `POST /api/upload` — 上传电子书，自动触发后台处理管线
+- `GET /api/books` — 列出所有书籍
+- `GET /api/books/{id}/status` — 查看处理进度
+- `GET /api/books/{id}/cover` — 获取封面图片
+- `POST /api/books/{id}/process` — 重试失败的处理任务
+- `GET /api/health` — 健康检查
+- `GET /docs` — OpenAPI 交互文档
+
+处理阶段：`queued → importing → indexing → generating → rendering → complete`（失败则进入 `failed`）。
+
+---
+
+## 平台说明
+
+### Linux
+```bash
+sudo apt install python3 python3-pip
+pip install -e ".[server,rag,imports]"
+# PDF OCR 可选：sudo apt install libgomp1
+```
+
+### macOS
+```bash
+brew install python@3.12
+pip install -e ".[server,rag,imports]"
+# Apple Silicon 用户注意 PyTorch 版本选择
+```
+
+### Windows
+```powershell
+# 推荐使用 Python 3.10+（从 python.org 安装）
+pip install -e ".[server,rag,imports]"
+# 重依赖（sentence-transformers、PaddleOCR）推荐通过 Docker 或 WSL2 运行
+```
+
+**Docker 推荐用于所有平台：**
+```bash
+docker compose up -d
+```
+
+---
+
+## 测试
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Skill
 
-Copy `SKILL.md` and `references/` into an Agent Skills-compatible directory. The Skill defines Ingest, Query, Review, and Lint behavior; the CLI provides deterministic indexing and checking.
+将 `SKILL.md` 和 `references/` 复制到 Agent Skills 兼容目录。Skill 定义了 Ingest、Query、Review 和 Lint 行为；CLI 提供确定性索引和检查。
+
+## 许可证
+
+MIT License — 详见 [LICENSE](LICENSE)。
+
+注意：可选的 `.[kindle]` 依赖包含 GPL-3.0-only 的 `mobi` 包。仅在评估并接受该许可证后安装。

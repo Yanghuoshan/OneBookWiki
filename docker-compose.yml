@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  onebookwiki:
+    build: .
+    ports:
+      - "${ONEBOOKWIKI_PORT:-8000}:8000"
+    volumes:
+      - ./books:/app/books
+      - ./.env:/app/.env:ro
+    environment:
+      - ONEBOOKWIKI_HOST=0.0.0.0
+      - ONEBOOKWIKI_PORT=8000
+      - ONEBOOKWIKI_BOOKS_ROOT=/app/books
+      # LLM configuration (from .env or override here)
+      - ONEBOOKWIKI_LLM_PROVIDER=${ONEBOOKWIKI_LLM_PROVIDER:-}
+      - ONEBOOKWIKI_LLM_API_KEY=${ONEBOOKWIKI_LLM_API_KEY:-}
+      - ONEBOOKWIKI_LLM_MODEL=${ONEBOOKWIKI_LLM_MODEL:-}
+      - ONEBOOKWIKI_LLM_BASE_URL=${ONEBOOKWIKI_LLM_BASE_URL:-}
+      # Embedding configuration
+      - ONEBOOKWIKI_EMBEDDING_BASE_URL=${ONEBOOKWIKI_EMBEDDING_BASE_URL:-}
+      - ONEBOOKWIKI_EMBEDDING_MODEL=${ONEBOOKWIKI_EMBEDDING_MODEL:-}
+      - ONEBOOKWIKI_BGE_M3_MODEL=${ONEBOOKWIKI_BGE_M3_MODEL:-}
+    restart: unless-stopped
