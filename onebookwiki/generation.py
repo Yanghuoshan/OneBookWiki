@@ -443,9 +443,8 @@ async def _process_rollup_async(
     unknown = ids - valid
     if unknown:
         unknown_values = sorted(unknown)
-        store.mark(node_id, "failed", error=f"unknown evidence ids: {unknown_values}")
-        _progress(options, f"{node_id}: failed evidence validation")
-        return (node_id, f"unknown evidence ids: {unknown_values}")
+        _progress(options, f"{node_id}: stripping {len(unknown_values)} unknown evidence id(s): {unknown_values}")
+        value = _strip_unknown_ids(value, unknown)
 
     # --- Persist artifact ---
     value.update(node_id=node_id, chapters=[item["chapter"] for item in group], evidence=[])
@@ -576,13 +575,39 @@ def _book_title(root: Path) -> str:
         return "Untitled book"
 
 
+_EVIDENCE_ID_RE = re.compile(r"^C\d+E\d+$")
+
 def _claim_ids(value: dict[str, Any]) -> set[str]:
+    """Extract evidence IDs from a generated response, keeping only well-formed IDs.
+
+    Malformed IDs (e.g. ``C78E?`` from an uncertain LLM) are silently dropped
+    so that one hallucinated identifier does not fail the entire node.
+    """
     result: set[str] = set()
-    for key in ("evidence_examples", "important_quotations", "cross_chapter_connections", "claims", "themes", "concepts", "arguments", "tensions"):
+    for key in ("observations", "quotations", "cross_chapter_connections", "claims", "themes", "concepts", "arguments", "tensions"):
         for item in value.get(key, []) or []:
             if isinstance(item, dict):
-                result.update(str(entry) for entry in item.get("evidence_ids", []) or [])
+                for entry in item.get("evidence_ids", []) or []:
+                    eid = str(entry)
+                    if _EVIDENCE_ID_RE.match(eid):
+                        result.add(eid)
     return result
+
+
+def _strip_unknown_ids(value: dict[str, Any], unknown: set[str]) -> dict[str, Any]:
+    """Remove unknown evidence IDs from a generated response in-place.
+
+    Rollup synthesis works from chapter summaries rather than raw evidence,
+    so the LLM occasionally hallucinates an evidence ID.  Stripping the
+    offending IDs is safer than failing the entire rollup group.
+    """
+    for key in ("observations", "quotations", "cross_chapter_connections", "claims", "themes", "concepts", "arguments", "tensions"):
+        for item in value.get(key, []) or []:
+            if isinstance(item, dict):
+                ids = item.get("evidence_ids")
+                if isinstance(ids, list):
+                    item["evidence_ids"] = [e for e in ids if str(e) not in unknown]
+    return value
 
 
 def generate_chapters(root: Path, options: GenerationOptions | None = None, chapters: list[int] | None = None) -> CheckpointStore:
@@ -759,7 +784,28 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
             ))
     if not chapters:
         raise GenerationError("no chapter artifacts; generate chapters first")
-    cards = [{"chapter": item.chapter, "title": item.title, "summary": item.executive_summary, "thesis": item.core_thesis, "claims": to_dict(item.claims)} for item in chapters]
+    cards = []
+    for item in chapters:
+        if item.claims:
+            evidence = to_dict(item.claims)
+            evidence_level = "claims"
+        elif item.observations:
+            evidence = to_dict(item.observations)
+            evidence_level = "observations"
+        elif item.quotations:
+            evidence = to_dict(item.quotations)
+            evidence_level = "quotations"
+        else:
+            evidence = []
+            evidence_level = "none"
+        cards.append({
+            "chapter": item.chapter,
+            "title": item.title,
+            "summary": item.executive_summary,
+            "thesis": item.core_thesis,
+            "evidence": evidence,
+            "evidence_level": evidence_level,
+        })
     chunks_by_chapter = _chunks_by_chapter(root)
     # --- Resolve concurrency ---
     effective_concurrency = options.concurrency
@@ -798,9 +844,8 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
                     unknown = ids - valid
                     if unknown:
                         unknown_values = sorted(unknown)
-                        store.mark(node_id, "failed", error=f"unknown evidence ids: {unknown_values}")
-                        _progress(options, f"{node_id}: failed evidence validation")
-                        raise GenerationError(f"rollup contains unknown evidence ids: {unknown_values}; allowed ids include {sorted(valid)[:12]}")
+                        _progress(options, f"{node_id}: stripping {len(unknown_values)} unknown evidence id(s): {unknown_values}")
+                        value = _strip_unknown_ids(value, unknown)
                     value.update(node_id=node_id, chapters=[item["chapter"] for item in group], evidence=[])
                     artifact.parent.mkdir(parents=True, exist_ok=True)
                     artifact.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

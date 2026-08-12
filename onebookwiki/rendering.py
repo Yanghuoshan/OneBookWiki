@@ -307,13 +307,13 @@ def render_chapter(
 
 {chr(10).join(f'- {_replace_inline_citations(item, evidence_by_id)}' for item in chapter.key_concepts) or '- （暂无。）'}
 
-## Evidence and Examples
+## Observations
 
-{_claims(chapter.evidence_examples, evidence_by_id=evidence_by_id)}
+{_claims(chapter.observations, evidence_by_id=evidence_by_id)}
 
-## Important Quotations
+## Quotations
 
-{_claims(chapter.important_quotations, evidence_by_id=evidence_by_id)}
+{_claims(chapter.quotations, evidence_by_id=evidence_by_id)}
 
 ## Relation to Previous Chapters
 

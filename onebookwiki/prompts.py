@@ -41,8 +41,8 @@ def chapter_prompt(
         "core_thesis": "string",
         "argument_map": "string",
         "key_concepts": ["string"],
-        "evidence_examples": [{"text": "string", "evidence_ids": ["E1"], "kind": "observation"}],
-        "important_quotations": [{"text": "exact quote", "evidence_ids": ["E1"], "kind": "quote"}],
+        "observations": [{"text": "string", "evidence_ids": ["E1"]}],
+        "quotations": [{"text": "exact quote", "evidence_ids": ["E1"]}],
         "relation_to_previous": "string",
         "relation_to_following": "string",
         "cross_chapter_connections": [{"text": "string", "evidence_ids": ["E1"]}],
@@ -66,10 +66,38 @@ def chapter_prompt(
 
 
 def rollup_prompt(chapters: list[dict], language: str = "zh-CN") -> str:
+    # Collect available evidence IDs from chapter cards.  evidence_level is
+    # one of claims / observations / quotations / none, set during card
+    # construction.  We surface it so the LLM can weigh citations appropriately.
+    available: dict[int, tuple[str, list[str]]] = {}
+    for ch in chapters:
+        cn = ch.get("chapter", 0)
+        ids: set[str] = set()
+        for entry in ch.get("evidence", []) or []:
+            for eid in entry.get("evidence_ids", []) or []:
+                ids.add(str(eid))
+        level = ch.get("evidence_level", "none")
+        if ids:
+            available[cn] = (level, sorted(ids, key=lambda x: (int(x[1:x.index("E")]), int(x[x.index("E") + 1:])) if "E" in x else (0, 0)))
+    range_block = ""
+    if available:
+        lines: list[str] = []
+        for cn, (level, eids) in sorted(available.items()):
+            lines.append(f"  Chapter {cn} [{level}]: {', '.join(eids)}")
+        range_block = (
+            "Available evidence IDs — only cite these.  Each chapter is tagged\n"
+            "with its evidence tier: [claims] = interpretive assertions with\n"
+            "confidence; [observations] = factual patterns noted in the source;\n"
+            "[quotations] = direct source excerpts.  Prefer [claims] when\n"
+            "building arguments; [observations] and [quotations] are weaker.\n"
+            + "\n".join(lines) + "\n\n"
+        )
     return (
         "Produce JSON only with keys summary, themes, concepts, arguments, tensions. "
         "Each item is an object with text and evidence_ids. Use only supplied chapter cards, "
         "retain uncertainty and cite evidence IDs. Do not invent facts or links. "
+        "Evidence IDs use format C{chapter}E{number}, e.g. C77E1. "
+        f"{range_block}"
         f"Write in {language}.\n\nCHAPTER CARDS:\n{_json(chapters)}"
     )
 

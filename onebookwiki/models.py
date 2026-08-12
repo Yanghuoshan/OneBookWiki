@@ -53,8 +53,8 @@ class ChapterInterpretation:
     core_thesis: str = ""
     argument_map: str = ""
     key_concepts: list[str] = field(default_factory=list)
-    evidence_examples: list[Claim] = field(default_factory=list)
-    important_quotations: list[Claim] = field(default_factory=list)
+    observations: list[Claim] = field(default_factory=list)
+    quotations: list[Claim] = field(default_factory=list)
     relation_to_previous: str = ""
     relation_to_following: str = ""
     cross_chapter_connections: list[Claim] = field(default_factory=list)
@@ -161,8 +161,8 @@ def chapter_from_dict(value: dict[str, Any]) -> ChapterInterpretation:
         core_thesis=str(value.get("core_thesis", "")),
         argument_map=str(value.get("argument_map", "")),
         key_concepts=[str(item) for item in value.get("key_concepts", ())],
-        evidence_examples=[_claim(item) for item in value.get("evidence_examples", ())],
-        important_quotations=[_claim(item) for item in value.get("important_quotations", ())],
+        observations=[_claim(item) for item in value.get("observations", ())],
+        quotations=[_claim(item) for item in value.get("quotations", ())],
         relation_to_previous=str(value.get("relation_to_previous", "")),
         relation_to_following=str(value.get("relation_to_following", "")),
         cross_chapter_connections=[_claim(item) for item in value.get("cross_chapter_connections", ())],

@@ -123,7 +123,7 @@ class GenerationTest(unittest.TestCase):
             self.assertEqual(store.data["nodes"]["rollup:1-4"]["status"], "completed")
             self.assertTrue((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").is_file())
 
-    def test_rollup_rejects_evidence_outside_its_group(self):
+    def test_rollup_strips_evidence_outside_its_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_index(root, chapters=4)
@@ -134,10 +134,16 @@ class GenerationTest(unittest.TestCase):
                 chapter_responses.append(GenerationResponse(text=json.dumps(chapter_value), model="test"))
             with patch("onebookwiki.generation.generate_response", side_effect=chapter_responses):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
+            # Evidence IDs outside the rollup group are silently stripped rather
+            # than failing the entire rollup (rollup synthesis works from summaries).
             invalid = {"summary": "Combined", "themes": [{"text": "Unknown chapter", "evidence_ids": ["C5E1"]}]}
-            with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=json.dumps(invalid), model="test")):
-                with self.assertRaisesRegex(GenerationError, "C5E1"):
-                    synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
+            book = {"overview": "Overview"}
+            with patch("onebookwiki.generation.generate_response", side_effect=[GenerationResponse(text=json.dumps(invalid), model="test"), GenerationResponse(text=json.dumps(book), model="test")]):
+                store = synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
+            self.assertEqual(store.data["nodes"]["rollup:1-4"]["status"], "completed")
+            artifact = json.loads((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").read_text(encoding="utf-8"))
+            # C5E1 should have been stripped from the persisted artifact
+            self.assertEqual(artifact["themes"][0]["evidence_ids"], [])
 
     def test_unrecoverable_response_marks_checkpoint_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
