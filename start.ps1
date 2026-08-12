@@ -33,6 +33,13 @@ try {
 # ---- Start server ----
 $Port = if ($env:ONEBOOKWIKI_PORT) { $env:ONEBOOKWIKI_PORT } else { "8000" }
 $HostAddr = if ($env:ONEBOOKWIKI_HOST) { $env:ONEBOOKWIKI_HOST } else { "0.0.0.0" }
+$envMode = if ($env:ONEBOOKWIKI_ENV) { $env:ONEBOOKWIKI_ENV } else { "development" }
 
-Write-Host "Starting OneBookWiki server on http://${HostAddr}:${Port} ..."
-& $pythonCmd -m uvicorn server.main:app --host $HostAddr --port $Port
+if ($envMode -eq "production") {
+    Write-Host "Starting OneBookWiki server (PRODUCTION) on http://${HostAddr}:${Port} ..."
+    & $pythonCmd -m uvicorn server.main:app --host $HostAddr --port $Port --workers 4 --proxy-headers --forwarded-allow-ips="*"
+} else {
+    Write-Host "Starting OneBookWiki server (DEVELOPMENT) on http://${HostAddr}:${Port} ..."
+    Write-Host "Frontend: cd frontend; npm run dev -- --host 127.0.0.1"
+    & $pythonCmd -m uvicorn server.main:app --host $HostAddr --port $Port --reload
+}

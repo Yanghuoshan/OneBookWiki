@@ -11,7 +11,6 @@ paddleocr<4,>=3.0
 paddlepaddle<4,>=3.0
 charset-normalizer>=3.3
 python-docx>=1.1
-legacy-doc==0.2.1
 olefile>=0.47
 mobi==0.4.1
 fastapi>=0.115
@@ -24,17 +23,12 @@ openai>=1.0
 pymupdf>=1.24
 json-repair>=0.30
 
-[doc]
-legacy-doc==0.2.1
-olefile>=0.47
-
 [docx]
 python-docx>=1.1
 
 [imports]
 charset-normalizer>=3.3
 python-docx>=1.1
-legacy-doc==0.2.1
 olefile>=0.47
 mobi==0.4.1
 

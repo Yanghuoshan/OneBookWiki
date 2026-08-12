@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 
@@ -120,6 +121,7 @@ def run_pipeline(
                 model=gen_config.model,
                 language="zh-CN",
                 retries=4,
+                progress=lambda msg: print(f"[generate] {msg}", file=sys.stderr, flush=True),
             )
             generate_wiki(book_dir, options)
 

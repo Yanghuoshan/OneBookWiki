@@ -1,6 +1,7 @@
 """OneBookWiki FastAPI application entry point."""
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -107,3 +108,29 @@ def retry_processing_endpoint(
 def health_check() -> dict:
     """Health check endpoint."""
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ---- Production mode: serve frontend static files + SPA fallback ----
+_is_production = os.getenv("ONEBOOKWIKI_ENV", "").lower() == "production"
+FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+if _is_production and FRONTEND_DIST.is_dir():
+    print("[onebookwiki] Production mode: serving frontend from frontend/dist/")
+
+    from fastapi.responses import FileResponse
+
+    _assets_dir = FRONTEND_DIST / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+
+    @app.middleware("http")
+    async def spa_fallback(request: Request, call_next):
+        path = request.url.path
+        # API, static routes, docs — let them through unchanged
+        if path.startswith(("/api", "/book/", "/assets", "/docs", "/openapi.json")):
+            return await call_next(request)
+        # Everything else → index.html (SPA handles client-side routing)
+        index_path = FRONTEND_DIST / "index.html"
+        if index_path.is_file():
+            return FileResponse(index_path)
+        return await call_next(request)

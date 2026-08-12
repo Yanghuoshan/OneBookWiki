@@ -22,15 +22,11 @@ Provides-Extra: text
 Requires-Dist: charset-normalizer>=3.3; extra == "text"
 Provides-Extra: docx
 Requires-Dist: python-docx>=1.1; extra == "docx"
-Provides-Extra: doc
-Requires-Dist: legacy-doc==0.2.1; extra == "doc"
-Requires-Dist: olefile>=0.47; extra == "doc"
 Provides-Extra: kindle
 Requires-Dist: mobi==0.4.1; extra == "kindle"
 Provides-Extra: imports
 Requires-Dist: charset-normalizer>=3.3; extra == "imports"
 Requires-Dist: python-docx>=1.1; extra == "imports"
-Requires-Dist: legacy-doc==0.2.1; extra == "imports"
 Requires-Dist: olefile>=0.47; extra == "imports"
 Requires-Dist: mobi==0.4.1; extra == "imports"
 Provides-Extra: server
@@ -50,7 +46,6 @@ Requires-Dist: paddleocr<4,>=3.0; extra == "all"
 Requires-Dist: paddlepaddle<4,>=3.0; extra == "all"
 Requires-Dist: charset-normalizer>=3.3; extra == "all"
 Requires-Dist: python-docx>=1.1; extra == "all"
-Requires-Dist: legacy-doc==0.2.1; extra == "all"
 Requires-Dist: olefile>=0.47; extra == "all"
 Requires-Dist: mobi==0.4.1; extra == "all"
 Requires-Dist: fastapi>=0.115; extra == "all"

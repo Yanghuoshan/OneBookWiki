@@ -10,21 +10,32 @@ if exist .env (
     echo [onebookwiki] Ensure ONEBOOKWIKI_* environment variables are set before running.
 )
 
-:: Detect Python (try python3 first, then python)
-set PYTHON_CMD=python
-where python3 >nul 2>&1
-if %ERRORLEVEL% EQU 0 set PYTHON_CMD=python3
+:: Detect Python (try python first, then python3)
+python --version >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    set PYTHON_CMD=python
+) else (
+    python3 --version >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        set PYTHON_CMD=python3
+    )
+)
 
-%PYTHON_CMD% --version >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+if "%PYTHON_CMD%"=="" (
     echo Error: Python not found. Install Python 3.10+ and try again.
     pause
     exit /b 1
 )
 
 echo Python found.
-echo Starting FastAPI server on port 8000...
 
-%PYTHON_CMD% -m uvicorn server.main:app --host 0.0.0.0 --port 8000
+if "%ONEBOOKWIKI_ENV%"=="production" (
+    echo Starting OneBookWiki server [PRODUCTION] on http://0.0.0.0:8000 ...
+    %PYTHON_CMD% -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips="*"
+) else (
+    echo Starting OneBookWiki server [DEVELOPMENT] on http://0.0.0.0:8000 ...
+    echo Frontend: cd frontend ^&^& npm run dev -- --host 127.0.0.1
+    %PYTHON_CMD% -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
+)
 
 pause

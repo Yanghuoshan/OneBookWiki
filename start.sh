@@ -29,6 +29,13 @@ echo "Python: $($PYTHON --version)"
 # ---- Start server ----
 PORT="${ONEBOOKWIKI_PORT:-8000}"
 HOST="${ONEBOOKWIKI_HOST:-0.0.0.0}"
+ENV_MODE="${ONEBOOKWIKI_ENV:-development}"
 
-echo "Starting OneBookWiki server on http://${HOST}:${PORT} ..."
-exec "$PYTHON" -m uvicorn server.main:app --host "$HOST" --port "$PORT"
+if [ "$ENV_MODE" = "production" ]; then
+    echo "Starting OneBookWiki server (PRODUCTION) on http://${HOST}:${PORT} ..."
+    exec "$PYTHON" -m uvicorn server.main:app --host "$HOST" --port "$PORT" --workers 4 --proxy-headers --forwarded-allow-ips="*"
+else
+    echo "Starting OneBookWiki server (DEVELOPMENT) on http://${HOST}:${PORT} ..."
+    echo "Frontend: cd frontend && npm run dev -- --host 127.0.0.1"
+    exec "$PYTHON" -m uvicorn server.main:app --host "$HOST" --port "$PORT" --reload
+fi
