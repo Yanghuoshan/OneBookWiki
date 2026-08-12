@@ -201,6 +201,28 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+def reset_stuck_books(conn: sqlite3.Connection) -> int:
+    """Reset books stuck in intermediate processing phases after a crash/force-stop.
+
+    Phases like 'importing', 'indexing', 'generating', 'rendering' indicate the
+    pipeline was interrupted mid-run.  Reset them to 'failed' so the user can
+    retry via the /api/books/{id}/process endpoint.
+    Returns the number of books that were reset.
+    """
+    stuck_phases = ("importing", "indexing", "generating", "rendering")
+    placeholders = ", ".join("?" for _ in stuck_phases)
+    now = _now()
+    cursor = conn.execute(
+        f"UPDATE books SET phase = 'failed',"
+        f" error_message = 'Server was interrupted during processing — please retry',"
+        f" updated_at = ?"
+        f" WHERE phase IN ({placeholders})",
+        (now, *stuck_phases),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
 def migrate_existing_books(conn: sqlite3.Connection, books_root: Path) -> int:
     """Scan books/ directory and write existing books into DB. Returns count."""
     if not books_root.is_dir():

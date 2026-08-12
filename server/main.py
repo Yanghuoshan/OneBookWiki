@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.database import init_db, migrate_existing_books, migrate_token_usage
+from server.database import init_db, migrate_existing_books, migrate_token_usage, reset_stuck_books
 from server.routes import books, upload
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,9 +30,12 @@ async def lifespan(app: FastAPI):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = init_db(str(DB_PATH))
     count = migrate_existing_books(conn, BOOKS_ROOT)
+    stuck = reset_stuck_books(conn)
     token_count = migrate_token_usage(conn, BOOKS_ROOT)
     print(f"[onebookwiki] Database initialized at {DB_PATH}")
     print(f"[onebookwiki] Migrated {count} existing book(s)")
+    if stuck:
+        print(f"[onebookwiki] Reset {stuck} stuck book(s) to failed state (interrupted processing)")
     if token_count:
         print(f"[onebookwiki] Migrated token usage for {token_count} book(s)")
     app.state.db = conn
