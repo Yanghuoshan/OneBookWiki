@@ -73,21 +73,58 @@ PDF 默认从书签/目录/标题自动检测章节边界；如需手动控制�
 
 ### 5. 启动服务
 
-```bash
-# 后端 API (Linux/macOS)    |  Windows PowerShell
-./start.sh                   |  .\start.ps1
+启动脚本通过环境变量 `ONEBOOKWIKI_ENV` 区分两种运行模式：
 
-# 前端阅读器（另开终端）
+| 模式 | `ONEBOOKWIKI_ENV` | 行为 |
+|------|-------------------|------|
+| 开发 | 不设置 或 `development`（默认） | 后端 :8000 + Vite 前端 :5173，前后端分离 |
+| 生产 | `production` | 后端 :8000 托管前端静态文件 + API，单端口对外 |
+
+#### 开发模式（默认）
+
+前后端分离，Vite 开发服务器代理 API 请求到后端：
+
+```bash
+# 终端 1：后端 API
+# Linux/macOS              |  Windows PowerShell
+./start.sh                 |  .\start.ps1
+
+# 终端 2：前端阅读器
 cd frontend && npm install && npm run dev -- --host 127.0.0.1
 ```
 
 浏览器打开 `http://127.0.0.1:5173/book`，上传页面 `http://127.0.0.1:5173/admin`。
 
+#### 生产模式
+
+后端单端口托管前端静态文件 + API + 书籍文件，适合外网部署：
+
+```bash
+# Linux/macOS
+ONEBOOKWIKI_ENV=production ./start.sh
+
+# Windows PowerShell
+$env:ONEBOOKWIKI_ENV = "production"
+.\start.ps1
+
+# Windows CMD
+set ONEBOOKWIKI_ENV=production
+start_server.bat
+```
+
+浏览器打开 `http://<服务器IP>:8000` 或绑定的域名即可访问，无需独立前端服务。
+
+生产模式下启动脚本自动使用 `--workers 4` 多进程和 `--proxy-headers` 参数。如需调整 worker 数量，修改对应启动脚本中的 `--workers` 值。
+
 ### Docker 一键部署
+
+Docker 镜像内置生产模式，构建并启动后直接对外服务：
 
 ```bash
 docker compose up -d
 ```
+
+访问 `http://<服务器IP>:8000`。
 
 ### 可选：PDF OCR 辅助
 
