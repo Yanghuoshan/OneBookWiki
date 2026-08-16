@@ -112,29 +112,33 @@ export default function ChatPage({ bookId, conversationId }: Props) {
           <PageTree structure={structure} onSelect={openWikiPage} />
         </aside>
         <section className="content-pane chat-content-pane" aria-live="polite">
-          <div className="chat-page-header">
-            <a href={`/book/${bookId}`} className="chat-back-link">返回 wiki</a>
-            <h2>回答</h2>
-            <p>此页面只对应当前 URL 中的对话。</p>
+          <div className="chat-scrollable-area">
+            <div className="chat-page-header">
+              <a href={`/book/${bookId}`} className="chat-back-link">返回 wiki</a>
+              <h2>回答</h2>
+              <p>此页面只对应当前 URL 中的对话。</p>
+            </div>
+            {error && <p className="chat-refresh-error" role="alert">{error}</p>}
+            <div className="chat-thread">
+              {conversation.turns.map(turn => (
+                <article className={`chat-turn chat-turn--${turn.status}`} key={turn.id}>
+                  <div className="chat-question"><span className="chat-role">问题 {turn.turn_no}</span><p>{turn.question}</p></div>
+                  <div className="chat-answer">
+                    {activeStatuses.has(turn.status) ? (
+                      <p className="chat-pending">正在检索书籍证据并生成回答...</p>
+                    ) : turn.answer ? (
+                      <div className="markdown-body"><MarkdownReader content={turn.answer} evidence={evidence} pagePath="chat-answer.md" pagesByPath={pagesByPath} onCitation={setSource} onPageLink={openWikiPage} /></div>
+                    ) : (
+                      <p className="chat-result-error">{turn.refusal_code ? `证据不足：${turn.refusal_code}` : turn.error_message || '该问题未能生成回答。'}</p>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
-          {error && <p className="chat-refresh-error" role="alert">{error}</p>}
-          <div className="chat-thread">
-            {conversation.turns.map(turn => (
-              <article className={`chat-turn chat-turn--${turn.status}`} key={turn.id}>
-                <div className="chat-question"><span className="chat-role">问题 {turn.turn_no}</span><p>{turn.question}</p></div>
-                <div className="chat-answer">
-                  {activeStatuses.has(turn.status) ? (
-                    <p className="chat-pending">正在检索书籍证据并生成回答...</p>
-                  ) : turn.answer ? (
-                    <div className="markdown-body"><MarkdownReader content={turn.answer} evidence={evidence} pagePath="chat-answer.md" pagesByPath={pagesByPath} onCitation={setSource} onPageLink={openWikiPage} /></div>
-                  ) : (
-                    <p className="chat-result-error">{turn.refusal_code ? `证据不足：${turn.refusal_code}` : turn.error_message || '该问题未能生成回答。'}</p>
-                  )}
-                </div>
-              </article>
-            ))}
+          <div className="chat-composer-container">
+            <ChatComposer onSubmit={submitFollowUp} disabled={active} compact />
           </div>
-          <ChatComposer onSubmit={submitFollowUp} disabled={active} compact />
         </section>
         {source && <SourcePanel
           record={source}
