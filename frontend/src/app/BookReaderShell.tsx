@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { formatConfidence, formatNativeLocator, formatSourceType, loadBook, loadPage, resolveBookBase } from '../data/bookLoader';
+import { createConversation } from '../data/chatLoader';
 import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiStructure } from '../types/wiki';
 import PageTree from '../components/PageTree';
 import MarkdownReader from '../components/MarkdownReader';
 import SourcePanel from '../components/SourcePanel';
+import ChatComposer from '../components/ChatComposer';
 
 type Props = { initialStructure?: WikiStructure; initialEvidence?: EvidenceIndex };
 
@@ -56,6 +58,10 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   const [loading, setLoading] = useState(!initialStructure);
   const [error, setError] = useState<string | null>(null);
   const bookBase = useMemo(() => resolveBookBase(), []);
+  const bookId = useMemo(() => {
+    const match = window.location.pathname.match(/^\/book\/([1-9]\d*)\/?$/);
+    return match ? Number(match[1]) : null;
+  }, []);
 
   useEffect(() => {
     if (structure) return;
@@ -109,6 +115,11 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   );
   const effectiveSourcePanelWidth = clamp(sourcePanelWidth, SOURCE_PANEL_MIN_WIDTH, sourcePanelMaximumWidth);
   const gridStyle = { '--source-panel-width': `${effectiveSourcePanelWidth}px` } as CSSProperties;
+  const startConversation = async (question: string) => {
+    if (!bookId) throw new Error('无法确定当前书籍');
+    const result = await createConversation(bookId, question);
+    window.location.assign(result.answerUrl);
+  };
 
   return (
     <div className="reader-shell">
@@ -120,7 +131,11 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
       <main ref={gridRef} className="reader-grid" data-source-open={Boolean(source)} style={gridStyle}>
         <aside className="navigation-pane"><p className="pane-label">READING MAP</p><p className="description">{structure.description || '基于原始文本生成的证据导向阅读地图。'}</p><PageTree structure={structure} currentPageId={current?.id} onSelect={setCurrent} /></aside>
         <section className="content-pane" aria-live="polite">
-          {current ? <><div className="content-meta">{meta.map(item => <span key={item}>{item}</span>)}</div><div className="markdown-body"><MarkdownReader content={content || '正在加载页面…'} evidence={evidence} pagePath={current.path} pagesByPath={pagesByPath} onCitation={setSource} onPageLink={setCurrent} /></div></> : <div className="empty-state"><h2>选择一个页面</h2><p>从左侧阅读地图开始浏览。</p></div>}
+          {current ? <>
+            <div className="content-meta">{meta.map(item => <span key={item}>{item}</span>)}</div>
+            <div className="markdown-body"><MarkdownReader content={content || '正在加载页面...'} evidence={evidence} pagePath={current.path} pagesByPath={pagesByPath} onCitation={setSource} onPageLink={setCurrent} /></div>
+            <ChatComposer onSubmit={startConversation} />
+          </> : <div className="empty-state"><h2>选择一个页面</h2><p>从左侧阅读地图开始浏览。</p></div>}
         </section>
         {source && <SourcePanel
           record={source}

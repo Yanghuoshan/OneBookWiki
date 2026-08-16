@@ -6,7 +6,8 @@ import json
 import sys
 from pathlib import Path
 
-from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters, generate_wiki as do_generate_wiki, resume_generation, synthesize_book
+from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters, generate_wiki as do_generate_wiki, resume_generation, synthesize_book, write_generation_snapshot
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS
 from onebookwiki.rendering import render_artifacts
 
 
@@ -26,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--model")
         command.add_argument("--language", default="zh-CN")
         command.add_argument("--max-input-tokens", type=int, default=12000)
-        command.add_argument("--max-output-tokens", type=int, default=1800)
+        command.add_argument("--max-output-tokens", type=int, default=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS)
         command.add_argument("--rollup-size", type=int, default=4)
         command.add_argument("--retries", type=int, default=1)
         command.add_argument("--run-id")
@@ -43,14 +44,17 @@ def main(argv: list[str] | None = None) -> int:
             store = CheckpointStore.latest(root)
             print(json.dumps(store.data if store else {"status": "none"}, ensure_ascii=False, indent=2))
             return 0
+        generation_options = options(args)
+        if not generation_options.dry_run:
+            write_generation_snapshot(root, generation_options)
         if args.command == "chapter":
-            store = generate_chapters(root, options(args))
+            store = generate_chapters(root, generation_options)
         elif args.command == "book":
-            store = synthesize_book(root, options(args))
+            store = synthesize_book(root, generation_options)
         elif args.command == "resume":
-            store = resume_generation(root, options(args), args.run_id)
+            store = resume_generation(root, generation_options, args.run_id)
         else:
-            store = do_generate_wiki(root, options(args))
+            store = do_generate_wiki(root, generation_options)
         print(f"run: {store.run_id}")
         if args.dry_run:
             print(json.dumps(store.data, ensure_ascii=False, indent=2))

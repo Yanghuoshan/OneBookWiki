@@ -29,12 +29,20 @@ if "%PYTHON_CMD%"=="" (
 
 echo Python found.
 
+if /I "%~1"=="--chat-worker" (
+    echo Starting OneBookWiki durable chat worker ...
+    %PYTHON_CMD% -m server.chat_worker
+    exit /b %ERRORLEVEL%
+)
+
 if "%ONEBOOKWIKI_ENV%"=="production" (
     echo Starting OneBookWiki server [PRODUCTION] on http://0.0.0.0:8000 ...
+    echo Start the chat worker separately: start_server.bat --chat-worker
     %PYTHON_CMD% -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips="*"
 ) else (
     echo Starting OneBookWiki server [DEVELOPMENT] on http://0.0.0.0:8000 ...
     echo Frontend: cd frontend ^&^& npm run dev -- --host 127.0.0.1
+    echo Chat worker: start_server.bat --chat-worker
     %PYTHON_CMD% -m uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
 )
 

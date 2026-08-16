@@ -120,8 +120,14 @@ def run_pipeline(
                 provider=gen_config.provider,
                 model=gen_config.model,
                 language="zh-CN",
+                max_output_tokens=gen_config.max_output_tokens,
                 retries=4,
                 progress=lambda msg: print(f"[generate] {msg}", file=sys.stderr, flush=True),
+            )
+            from server.config import generation_snapshot
+            snapshot = generation_snapshot(gen_config.provider, gen_config.model, gen_config.max_output_tokens)
+            (book_dir / ".onebookwiki" / "generation-config.json").write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
             resume_generation(book_dir, options)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from onebookwiki.index import LocalIndex
 from onebookwiki.ledger import append_usage
-from onebookwiki.providers import ProviderUnavailable, build_embedder, generate_response
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder, generate_response
 from onebookwiki.remote_index import CloudVectorIndex
 from onebookwiki.retrieval import HybridRetriever, LexicalRetriever, rerank_results, search_project, vector_results
 from onebookwiki.wiki_retrieval import assemble_wiki_first_context, build_wiki_first_prompt, search_artifacts, search_wiki
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--chapter", type=int)
     parser.add_argument("--max-tokens", type=int, default=8000)
-    parser.add_argument("--max-output-tokens", type=int, default=512)
+    parser.add_argument("--max-output-tokens", type=int, default=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS)
     parser.add_argument("--max-wiki-pages", type=int, default=3)
     parser.add_argument("--max-artifacts", type=int, default=2)
     parser.add_argument("--max-raw-per-chapter", type=int, default=3)

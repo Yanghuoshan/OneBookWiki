@@ -82,8 +82,25 @@ class CloudVectorIndex:
         self.manifest.save(self.root)
         return len(old_ids), len(chunks)
 
+    def _validate_identity(self, vectors: dict[str, list[float]]) -> None:
+        identity = self.embedder.identity()
+        backend = str(identity.get("provider", getattr(self.embedder, "provider", "vector")))
+        model = str(identity.get("model", "configured"))
+        if not vectors:
+            raise ValueError("Vector index is missing or empty")
+        if self.manifest.embedding_backend != backend or self.manifest.embedding_model != model:
+            raise ValueError(
+                f"Vector index identity mismatch: manifest={self.manifest.embedding_backend}/{self.manifest.embedding_model}, "
+                f"configured={backend}/{model}"
+            )
+        for chapter in self.manifest.chapters.values():
+            stored = chapter.get("index_identity") or {}
+            if stored and (str(stored.get("backend", backend)) != backend or str(stored.get("model", model)) != model):
+                raise ValueError("Vector index chapter identity does not match the configured embedding model")
+
     def search(self, query: str, top_k: int = 8, chapter: int | None = None) -> list[tuple[float, dict]]:
         vectors = self._load_vectors()
+        self._validate_identity(vectors)
         query_vector = self.embedder.embed_one(query)
         query_norm = math.sqrt(sum(value * value for value in query_vector)) or 1.0
         results = []

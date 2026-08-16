@@ -179,3 +179,43 @@ export type TokenUsageDetail = {
   total_tokens: number;
   entries: TokenEntry[];
 };
+
+// ---- Persistent chat types ----
+
+export type ChatTurnStatus = 'queued' | 'retrieving' | 'generating' | 'succeeded' | 'refused' | 'failed';
+
+export type ChatCitation = {
+  evidence_id: string;
+  chunk_id?: string;
+  source_path?: string;
+  chapter?: number;
+  start_line?: number;
+  end_line?: number;
+  quote?: string;
+};
+
+export type ChatTurn = {
+  id: string;
+  turn_no: number;
+  question: string;
+  answer?: string | null;
+  status: ChatTurnStatus;
+  refusal_code?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  citations: ChatCitation[];
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+};
+
+export type ChatConversation = {
+  id: string;
+  book_id: number;
+  book_title: string;
+  book_phase: BookPhase;
+  status: 'active';
+  created_at: string;
+  updated_at: string;
+  turns: ChatTurn[];
+};

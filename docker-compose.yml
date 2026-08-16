@@ -8,17 +8,29 @@ services:
     volumes:
       - ./books:/app/books
       - ./.env:/app/.env:ro
-    environment:
-      - ONEBOOKWIKI_HOST=0.0.0.0
-      - ONEBOOKWIKI_PORT=8000
-      - ONEBOOKWIKI_BOOKS_ROOT=/app/books
-      # LLM configuration (from .env or override here)
-      - ONEBOOKWIKI_LLM_PROVIDER=${ONEBOOKWIKI_LLM_PROVIDER:-}
-      - ONEBOOKWIKI_LLM_API_KEY=${ONEBOOKWIKI_LLM_API_KEY:-}
-      - ONEBOOKWIKI_LLM_MODEL=${ONEBOOKWIKI_LLM_MODEL:-}
-      - ONEBOOKWIKI_LLM_BASE_URL=${ONEBOOKWIKI_LLM_BASE_URL:-}
-      # Embedding configuration
-      - ONEBOOKWIKI_EMBEDDING_BASE_URL=${ONEBOOKWIKI_EMBEDDING_BASE_URL:-}
-      - ONEBOOKWIKI_EMBEDDING_MODEL=${ONEBOOKWIKI_EMBEDDING_MODEL:-}
-      - ONEBOOKWIKI_BGE_M3_MODEL=${ONEBOOKWIKI_BGE_M3_MODEL:-}
+    environment: &onebookwiki-environment
+      ONEBOOKWIKI_HOST: 0.0.0.0
+      ONEBOOKWIKI_PORT: 8000
+      ONEBOOKWIKI_BOOKS_ROOT: /app/books
+      ONEBOOKWIKI_LLM_PROVIDER: ${ONEBOOKWIKI_LLM_PROVIDER:-}
+      ONEBOOKWIKI_LLM_API_KEY: ${ONEBOOKWIKI_LLM_API_KEY:-}
+      ONEBOOKWIKI_LLM_MODEL: ${ONEBOOKWIKI_LLM_MODEL:-}
+      ONEBOOKWIKI_LLM_BASE_URL: ${ONEBOOKWIKI_LLM_BASE_URL:-}
+      ONEBOOKWIKI_EMBEDDING_BASE_URL: ${ONEBOOKWIKI_EMBEDDING_BASE_URL:-}
+      ONEBOOKWIKI_EMBEDDING_MODEL: ${ONEBOOKWIKI_EMBEDDING_MODEL:-}
+      ONEBOOKWIKI_BGE_M3_MODEL: ${ONEBOOKWIKI_BGE_M3_MODEL:-}
+      ONEBOOKWIKI_ADMIN_TOKEN: ${ONEBOOKWIKI_ADMIN_TOKEN:-}
+      ONEBOOKWIKI_CHAT_LEASE_SECONDS: ${ONEBOOKWIKI_CHAT_LEASE_SECONDS:-300}
+      ONEBOOKWIKI_CHAT_WORKER_IDLE: ${ONEBOOKWIKI_CHAT_WORKER_IDLE:-1}
+    restart: unless-stopped
+
+  chat-worker:
+    build: .
+    command: ["python", "-m", "server.chat_worker"]
+    volumes:
+      - ./books:/app/books
+      - ./.env:/app/.env:ro
+    environment: *onebookwiki-environment
+    depends_on:
+      - onebookwiki
     restart: unless-stopped

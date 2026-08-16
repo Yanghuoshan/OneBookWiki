@@ -6,9 +6,11 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+from server.config import books_root
+
 router = APIRouter(prefix="/api", tags=["books"])
 
-BOOKS_ROOT = Path(__file__).resolve().parent.parent.parent / "books"
+BOOKS_ROOT = books_root()
 
 
 def _db(request: Request):

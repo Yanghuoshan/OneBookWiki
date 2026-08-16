@@ -1,4 +1,8 @@
 # OneBookWiki server startup script (Windows PowerShell)
+param(
+    [switch]$ChatWorker
+)
+
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -30,16 +34,24 @@ try {
     exit 1
 }
 
-# ---- Start server ----
+# ---- Start server or durable chat worker ----
+if ($ChatWorker) {
+    Write-Host "Starting OneBookWiki durable chat worker ..."
+    & $pythonCmd -m server.chat_worker
+    exit $LASTEXITCODE
+}
+
 $Port = if ($env:ONEBOOKWIKI_PORT) { $env:ONEBOOKWIKI_PORT } else { "8000" }
 $HostAddr = if ($env:ONEBOOKWIKI_HOST) { $env:ONEBOOKWIKI_HOST } else { "0.0.0.0" }
 $envMode = if ($env:ONEBOOKWIKI_ENV) { $env:ONEBOOKWIKI_ENV } else { "development" }
 
 if ($envMode -eq "production") {
     Write-Host "Starting OneBookWiki server (PRODUCTION) on http://${HostAddr}:${Port} ..."
+    Write-Host "Start the chat worker separately: .\start.ps1 -ChatWorker"
     & $pythonCmd -m uvicorn server.main:app --host $HostAddr --port $Port --workers 4 --proxy-headers --forwarded-allow-ips="*"
 } else {
     Write-Host "Starting OneBookWiki server (DEVELOPMENT) on http://${HostAddr}:${Port} ..."
     Write-Host "Frontend: cd frontend; npm run dev -- --host 127.0.0.1"
+    Write-Host "Chat worker: .\start.ps1 -ChatWorker"
     & $pythonCmd -m uvicorn server.main:app --host $HostAddr --port $Port --reload
 }

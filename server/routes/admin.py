@@ -5,12 +5,15 @@ import json
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+from server.auth import require_admin
+from server.config import ChatSettings, books_root
 
-BOOKS_ROOT = Path(__file__).resolve().parent.parent.parent / "books"
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
+
+BOOKS_ROOT = books_root()
 
 
 def _db(request: Request):
@@ -44,7 +47,7 @@ def delete_book_endpoint(book_id: int, request: Request):
 
     book_title = book.get("title") or book_id
 
-    # Log BEFORE delete — operation_logs FK references books(id)
+    # Keep the historical delete record before deleting the book row.
     insert_operation_log(
         _db(request),
         book_id,
@@ -64,6 +67,28 @@ def delete_book_endpoint(book_id: int, request: Request):
         shutil.rmtree(book_dir)
 
     return JSONResponse({"deleted": True, "bookId": book_id})
+
+
+# ── Chat Audit ─────────────────────────────────────────────────────────────────
+
+
+@router.get("/chat-turns")
+def list_chat_turns(
+    request: Request,
+    book_id: int | None = None,
+    query: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """Return persisted chat questions for authorized audit only."""
+    from server.database import list_chat_audit
+
+    bounded_limit = min(max(1, limit), 200)
+    bounded_offset = max(0, offset)
+    turns, total = list_chat_audit(
+        _db(request), book_id=book_id, query=query, limit=bounded_limit, offset=bounded_offset
+    )
+    return JSONResponse({"turns": turns, "total": total, "limit": bounded_limit, "offset": bounded_offset})
 
 
 # ── Book Metadata Update ──────────────────────────────────────────────────────

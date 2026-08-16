@@ -1,0 +1,105 @@
+# OneBookWiki Nginx 配置示例
+# 适用于生产环境反向代理部署
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name duckorganon.dpdns.org;
+
+    # 重定向到 HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name duckorganon.dpdns.org;
+
+    # SSL 证书配置（请替换为你的实际证书路径）
+    ssl_certificate /path/to/your/cert.pem;
+    ssl_certificate_key /path/to/your/key.pem;
+
+    # SSL 优化配置
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # 日志
+    access_log /var/log/nginx/onebookwiki-access.log;
+    error_log /var/log/nginx/onebookwiki-error.log;
+
+    # 客户端请求大小限制（支持大文件上传）
+    client_max_body_size 500M;
+    client_body_timeout 300s;
+
+    # 代理超时配置
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+
+    # 根路径和 SPA 路由（/book, /admin 等）
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # 禁用缓存，确保总是获取最新内容
+        add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0";
+        expires off;
+    }
+
+    # 静态资源 /assets（前端 JS/CSS）
+    # 重要：这个必须在 location / 之前，或者明确代理
+    location /assets/ {
+        proxy_pass http://127.0.0.1:8000/assets/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 静态资源可以长期缓存
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # API 路由
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # API 不缓存
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+    }
+
+    # 书籍文件（Markdown、图片等）
+    location /book/ {
+        proxy_pass http://127.0.0.1:8000/book/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 书籍内容中等缓存
+        expires 1h;
+        add_header Cache-Control "public";
+    }
+
+    # WebSocket 支持（如果未来需要）
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8000/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

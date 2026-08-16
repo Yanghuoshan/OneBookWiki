@@ -5,6 +5,8 @@ manifest or printed. Both adapters use an OpenAI-compatible API surface.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -14,6 +16,9 @@ from .chunking import count_tokens
 
 class ProviderUnavailable(RuntimeError):
     pass
+
+
+CANONICAL_GENERATION_MAX_OUTPUT_TOKENS = 1800
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,7 @@ class GenerationConfig:
     timeout: float = 60.0
     context_window: int | None = None
     concurrency: int = 1
+    max_output_tokens: int = CANONICAL_GENERATION_MAX_OUTPUT_TOKENS
 
     @classmethod
     def from_env(cls, provider: str | None = None, model: str | None = None) -> "GenerationConfig":
@@ -167,6 +173,7 @@ class GenerationConfig:
             timeout=timeout,
             context_window=context_window,
             concurrency=concurrency,
+            max_output_tokens=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS,
         )
 
 
@@ -216,7 +223,7 @@ def generate_response(
     prompt: str,
     provider: str = "none",
     model: str | None = None,
-    max_output_tokens: int = 512,
+    max_output_tokens: int = CANONICAL_GENERATION_MAX_OUTPUT_TOKENS,
     system_prompt: str = "You are an evidence-grounded book research assistant.",
 ) -> GenerationResponse:
     """Generate text and preserve provider usage when the endpoint supplies it."""
@@ -271,7 +278,7 @@ def generate(
     prompt: str,
     provider: str = "none",
     model: str | None = None,
-    max_output_tokens: int = 512,
+    max_output_tokens: int = CANONICAL_GENERATION_MAX_OUTPUT_TOKENS,
 ) -> str:
     """Backward-compatible string-only generation wrapper."""
     return generate_response(prompt, provider, model, max_output_tokens).text

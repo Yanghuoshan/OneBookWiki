@@ -1,4 +1,4 @@
-"""OneBookWiki FastAPI application entry point."""
+"""OneBookWiki FastAPI application entry point - Alternative version with different mounting strategy."""
 from __future__ import annotations
 
 import os
@@ -120,40 +120,45 @@ def health_check(request: Request) -> dict:
 _is_production = os.getenv("ONEBOOKWIKI_ENV", "").lower() == "production"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
-if _is_production and FRONTEND_DIST.is_dir():
-    print(f"[onebookwiki] Production mode: serving frontend from {FRONTEND_DIST}")
-
-    from fastapi.responses import FileResponse
-
-    # Mount assets BEFORE middleware to ensure proper routing
-    _assets_dir = FRONTEND_DIST / "assets"
-    if _assets_dir.is_dir():
-        print(f"[onebookwiki] Mounting /assets from {_assets_dir}")
-        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
-    else:
-        print(f"[onebookwiki] WARNING: Assets directory not found at {_assets_dir}")
-
-    @app.middleware("http")
-    async def spa_fallback(request: Request, call_next):
-        path = request.url.path
-        # API, frontend assets, docs — let them through unchanged
-        if path.startswith(("/api", "/assets", "/docs", "/openapi.json")):
-            return await call_next(request)
-        # Only numeric book IDs are valid. Real book files stay with StaticFiles;
-        # bare /book and /book/<id> navigation requests use the SPA entry point.
-        if path.startswith("/book/"):
-            rest = path[len("/book/"):]
-            if rest:
-                book_id, separator, relative_path = rest.partition("/")
-                if not book_id.isdigit() or int(book_id) <= 0 or str(int(book_id)) != book_id:
-                    return JSONResponse({"detail": "Book URL must use a positive numeric ID"}, status_code=404)
-                if separator and relative_path and relative_path.startswith("wiki/"):
-                    return await call_next(request)
-        # Everything else (including /book, /book/, and /book/<id>) → index.html
-        index_path = FRONTEND_DIST / "index.html"
-        if index_path.is_file():
-            return FileResponse(index_path)
-        return await call_next(request)
-else:
-    if _is_production:
+if _is_production:
+    if not FRONTEND_DIST.is_dir():
         print(f"[onebookwiki] WARNING: Production mode enabled but frontend/dist not found at {FRONTEND_DIST}")
+        print(f"[onebookwiki] Please run: cd frontend && npm run build")
+    else:
+        print(f"[onebookwiki] Production mode: serving frontend from {FRONTEND_DIST}")
+
+        from fastapi.responses import FileResponse
+
+        # IMPORTANT: Mount /assets FIRST, before any middleware or fallback routes
+        _assets_dir = FRONTEND_DIST / "assets"
+        if _assets_dir.is_dir():
+            print(f"[onebookwiki] Mounting /assets from {_assets_dir}")
+            app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="frontend-assets")
+        else:
+            print(f"[onebookwiki] WARNING: Assets directory not found at {_assets_dir}")
+
+        # Serve index.html for SPA routes (must come AFTER /assets mount)
+        @app.get("/{full_path:path}")
+        async def spa_fallback(request: Request, full_path: str):
+            """Serve index.html for all unmatched routes (SPA fallback)."""
+            # Skip if this is an API call or static asset that already 404'd
+            if full_path.startswith(("api/", "docs", "openapi.json")):
+                raise HTTPException(status_code=404, detail="Not found")
+
+            # For /book/<numeric-id>/wiki/* paths, let the book static files handler try first
+            if full_path.startswith("book/"):
+                rest = full_path[5:]  # Remove "book/"
+                if rest:
+                    book_id, separator, relative_path = rest.partition("/")
+                    if book_id.isdigit() and separator and relative_path.startswith("wiki/"):
+                        # This is a book static file request, let it 404 naturally
+                        raise HTTPException(status_code=404, detail="Book file not found")
+
+            # Everything else gets the SPA entry point
+            index_path = FRONTEND_DIST / "index.html"
+            if index_path.is_file():
+                return FileResponse(index_path)
+
+            raise HTTPException(status_code=404, detail="Frontend not built")
+
+        print("[onebookwiki] SPA fallback route registered")

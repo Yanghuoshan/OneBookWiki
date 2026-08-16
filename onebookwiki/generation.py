@@ -16,7 +16,7 @@ from .index import LocalIndex
 from .ledger import append_usage
 from .models import BookSynthesis, ChapterInterpretation, EvidenceRef, Rollup, book_from_dict, chapter_from_dict, rollup_from_dict, to_dict
 from .prompts import book_prompt, chapter_prompt, rollup_prompt
-from .providers import GenerationResponse, ProviderUnavailable, generate_response
+from .providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, GenerationConfig, GenerationResponse, generate_response
 
 
 class GenerationError(RuntimeError):
@@ -32,7 +32,7 @@ class GenerationOptions:
     model: str | None = None
     language: str = "zh-CN"
     max_input_tokens: int = 12000
-    max_output_tokens: int = 1800
+    max_output_tokens: int = CANONICAL_GENERATION_MAX_OUTPUT_TOKENS
     rollup_size: int = 4
     retries: int = 1
     run_id: str | None = None
@@ -884,8 +884,21 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
     return store
 
 
+def write_generation_snapshot(root: Path, options: GenerationOptions) -> None:
+    """Persist the non-secret LLM profile required by durable Web chat."""
+    from server.config import generation_snapshot
+
+    model = options.model or GenerationConfig.from_env(options.provider).model
+    snapshot = generation_snapshot(options.provider, model, options.max_output_tokens)
+    target = root / ".onebookwiki" / "generation-config.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def generate_wiki(root: Path, options: GenerationOptions | None = None) -> CheckpointStore:
     options = options or GenerationOptions()
+    if not options.dry_run:
+        write_generation_snapshot(root, options)
     store = generate_chapters(root, options)
     return synthesize_book(root, GenerationOptions(**{**options.__dict__, "run_id": store.run_id}))
 

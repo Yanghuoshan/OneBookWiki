@@ -26,16 +26,23 @@ fi
 
 echo "Python: $($PYTHON --version)"
 
-# ---- Start server ----
+# ---- Start server or durable chat worker ----
+if [ "${1:-}" = "--chat-worker" ]; then
+    echo "Starting OneBookWiki durable chat worker ..."
+    exec "$PYTHON" -m server.chat_worker
+fi
+
 PORT="${ONEBOOKWIKI_PORT:-8000}"
 HOST="${ONEBOOKWIKI_HOST:-0.0.0.0}"
 ENV_MODE="${ONEBOOKWIKI_ENV:-development}"
 
 if [ "$ENV_MODE" = "production" ]; then
     echo "Starting OneBookWiki server (PRODUCTION) on http://${HOST}:${PORT} ..."
+    echo "Start the chat worker separately: ./start.sh --chat-worker"
     exec "$PYTHON" -m uvicorn server.main:app --host "$HOST" --port "$PORT" --workers 4 --proxy-headers --forwarded-allow-ips="*"
 else
     echo "Starting OneBookWiki server (DEVELOPMENT) on http://${HOST}:${PORT} ..."
     echo "Frontend: cd frontend && npm run dev -- --host 127.0.0.1"
+    echo "Chat worker: ./start.sh --chat-worker"
     exec "$PYTHON" -m uvicorn server.main:app --host "$HOST" --port "$PORT" --reload
 fi

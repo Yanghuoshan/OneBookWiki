@@ -9,6 +9,7 @@ from onebookwiki.chunking import count_tokens
 from onebookwiki.context import assemble_context
 from onebookwiki.index import LocalIndex
 from onebookwiki.providers import (
+    CANONICAL_GENERATION_MAX_OUTPUT_TOKENS,
     GenerationConfig,
     ProviderUnavailable,
     build_embedder,
@@ -74,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict-hybrid", action="store_true", help="fail instead of falling back if vector retrieval is unavailable")
     parser.add_argument("--provider", help="LLM provider name (or ONEBOOKWIKI_LLM_PROVIDER)")
     parser.add_argument("--model")
-    parser.add_argument("--max-output-tokens", type=int, default=512)
+    parser.add_argument("--max-output-tokens", type=int, default=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS)
     parser.add_argument("--rerank", choices=("local", "none"), default="local")
     parser.add_argument("--rrf-k", type=int, default=60)
     parser.add_argument("--lexical-weight", type=float, default=1.0)

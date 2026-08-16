@@ -7,7 +7,7 @@ from pathlib import Path
 
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_wiki as do_generate_wiki, resume_generation
 from onebookwiki.importers import ImportOptions, detect_source_type, import_document
-from onebookwiki.providers import ProviderUnavailable
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable
 from onebookwiki.rendering import render_artifacts
 from onebookwiki.checkpoints import CheckpointStore
 
@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model")
     parser.add_argument("--language", default="zh-CN")
     parser.add_argument("--max-input-tokens", type=int, default=12000)
-    parser.add_argument("--max-output-tokens", type=int, default=1800)
+    parser.add_argument("--max-output-tokens", type=int, default=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS)
     parser.add_argument("--rollup-size", type=int, default=4)
     parser.add_argument("--retries", type=int, default=4)
     parser.add_argument("--input-rate", type=float)

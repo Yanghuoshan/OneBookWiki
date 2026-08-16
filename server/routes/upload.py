@@ -10,9 +10,11 @@ from pathlib import Path
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
+from server.config import books_root
+
 router = APIRouter(prefix="/api", tags=["upload"])
 
-BOOKS_ROOT = Path(__file__).resolve().parent.parent.parent / "books"
+BOOKS_ROOT = books_root()
 
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".epub", ".mobi", ".azw", ".azw3",
