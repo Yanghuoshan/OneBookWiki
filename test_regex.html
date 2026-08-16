@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>正则表达式测试</title>
+</head>
+<body>
+    <h1>BookId 提取测试</h1>
+    <div id="results"></div>
+
+    <script>
+        // 旧的正则
+        const oldPattern = /^\/book\/([1-9]\d*)\/?$/;
+        // 新的正则
+        const newPattern = /^\/book\/([1-9]\d*)(?:\/|$)/;
+
+        const testPaths = [
+            '/book/2',
+            '/book/2/',
+            '/book/2?page=xxx',  // 这个是关键：pathname 不包含查询参数
+            '/book/2/wiki/structure.json',
+            '/book/2/ask/xxx',
+            '/book/123',
+            '/book/0',  // 应该不匹配
+            '/book/abc',  // 应该不匹配
+        ];
+
+        let html = '<table border="1" cellpadding="5"><tr><th>Path</th><th>旧正则</th><th>新正则</th></tr>';
+
+        testPaths.forEach(path => {
+            const oldMatch = path.match(oldPattern);
+            const newMatch = path.match(newPattern);
+            html += `<tr>
+                <td>${path}</td>
+                <td>${oldMatch ? '✅ ' + oldMatch[1] : '❌'}</td>
+                <td>${newMatch ? '✅ ' + newMatch[1] : '❌'}</td>
+            </tr>`;
+        });
+
+        html += '</table>';
+        html += '<h2>实际 URL 测试</h2>';
+        html += '<p>当前 pathname: <code>' + window.location.pathname + '</code></p>';
+        html += '<p>当前完整 URL: <code>' + window.location.href + '</code></p>';
+
+        // 模拟实际场景
+        const simulateUrl = (url) => {
+            const urlObj = new URL(url, 'http://localhost');
+            const pathname = urlObj.pathname;
+            const oldMatch = pathname.match(oldPattern);
+            const newMatch = pathname.match(newPattern);
+            return { pathname, oldMatch, newMatch };
+        };
+
+        const scenarios = [
+            'http://localhost/book/2',
+            'http://localhost/book/2?page=chapter1',
+            'http://localhost/book/2/?page=chapter1',
+        ];
+
+        html += '<h3>URL 场景测试</h3><table border="1" cellpadding="5"><tr><th>URL</th><th>Pathname</th><th>旧正则</th><th>新正则</th></tr>';
+        scenarios.forEach(url => {
+            const result = simulateUrl(url);
+            html += `<tr>
+                <td>${url}</td>
+                <td>${result.pathname}</td>
+                <td>${result.oldMatch ? '✅ ' + result.oldMatch[1] : '❌'}</td>
+                <td>${result.newMatch ? '✅ ' + result.newMatch[1] : '❌'}</td>
+            </tr>`;
+        });
+        html += '</table>';
+
+        document.getElementById('results').innerHTML = html;
+    </script>
+</body>
+</html>

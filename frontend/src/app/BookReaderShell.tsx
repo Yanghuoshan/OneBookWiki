@@ -59,7 +59,7 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   const [error, setError] = useState<string | null>(null);
   const bookBase = useMemo(() => resolveBookBase(), []);
   const bookId = useMemo(() => {
-    const match = window.location.pathname.match(/^\/book\/([1-9]\d*)\/?$/);
+    const match = window.location.pathname.match(/^\/book\/([1-9]\d*)(?:\/|$)/);
     return match ? Number(match[1]) : null;
   }, []);
 
@@ -116,8 +116,14 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
   const effectiveSourcePanelWidth = clamp(sourcePanelWidth, SOURCE_PANEL_MIN_WIDTH, sourcePanelMaximumWidth);
   const gridStyle = { '--source-panel-width': `${effectiveSourcePanelWidth}px` } as CSSProperties;
   const startConversation = async (question: string) => {
-    if (!bookId) throw new Error('无法确定当前书籍');
+    console.log('[BookReaderShell] startConversation called', { bookId, pathname: window.location.pathname, question });
+    if (!bookId) {
+      console.error('[BookReaderShell] bookId is null, pathname:', window.location.pathname);
+      throw new Error('无法确定当前书籍');
+    }
+    console.log('[BookReaderShell] Creating conversation for book', bookId);
     const result = await createConversation(bookId, question);
+    console.log('[BookReaderShell] Conversation created, redirecting to', result.answerUrl);
     window.location.assign(result.answerUrl);
   };
 
