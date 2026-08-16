@@ -25,7 +25,7 @@ export async function fetchBookStatus(bookId: number): Promise<BookStatus> {
 
 export function getCoverUrl(bookId: number, coverPath?: string | null): string | undefined {
   if (coverPath) {
-    return `/book/${encodeURIComponent(bookId)}/${coverPath}`;
+    return `${API_BASE}/books/${encodeURIComponent(bookId)}/cover`;
   }
   return undefined;
 }
