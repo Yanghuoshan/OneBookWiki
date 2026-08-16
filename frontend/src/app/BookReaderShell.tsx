@@ -130,11 +130,15 @@ export default function BookReaderShell({ initialStructure, initialEvidence }: P
       </header>
       <main ref={gridRef} className="reader-grid" data-source-open={Boolean(source)} style={gridStyle}>
         <aside className="navigation-pane"><p className="pane-label">READING MAP</p><p className="description">{structure.description || '基于原始文本生成的证据导向阅读地图。'}</p><PageTree structure={structure} currentPageId={current?.id} onSelect={setCurrent} /></aside>
-        <section className="content-pane" aria-live="polite">
+        <section className="content-pane book-content-pane" aria-live="polite">
           {current ? <>
-            <div className="content-meta">{meta.map(item => <span key={item}>{item}</span>)}</div>
-            <div className="markdown-body"><MarkdownReader content={content || '正在加载页面...'} evidence={evidence} pagePath={current.path} pagesByPath={pagesByPath} onCitation={setSource} onPageLink={setCurrent} /></div>
-            <ChatComposer onSubmit={startConversation} />
+            <div className="book-scrollable-area">
+              <div className="content-meta">{meta.map(item => <span key={item}>{item}</span>)}</div>
+              <div className="markdown-body"><MarkdownReader content={content || '正在加载页面...'} evidence={evidence} pagePath={current.path} pagesByPath={pagesByPath} onCitation={setSource} onPageLink={setCurrent} /></div>
+            </div>
+            <div className="book-composer-container">
+              <ChatComposer onSubmit={startConversation} />
+            </div>
           </> : <div className="empty-state"><h2>选择一个页面</h2><p>从左侧阅读地图开始浏览。</p></div>}
         </section>
         {source && <SourcePanel
