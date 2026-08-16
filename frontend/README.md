@@ -12,13 +12,13 @@
 
 ```text
 http://127.0.0.1:5173/book
-http://127.0.0.1:5173/book/zhenshi
-http://127.0.0.1:5173/book/another-book?page=chapter-01
+http://127.0.0.1:5173/book/1
+http://127.0.0.1:5173/book/1?page=chapter-01
 ```
 
-- `/book` 和 `/book/wiki/...` 继续指向默认书籍 `books/zhenshi`。
-- `/book/<book-id>` 指向 `books/<book-id>`。
-- `<book-id>` 只能包含字母、数字、`_` 和 `-`，并且对应 `onebookwiki/books/` 下的目录。
+- `/book` 打开阅读首页；上传完成后书籍使用 `/book/<id>` 访问。
+- `/book/<id>` 指向 `books/<id>`，其中 `<id>` 是从 `1` 开始的正整数自增 ID。
+- 书籍目录和 URL 只接受不带前导零的数字 ID，例如 `books/1` 和 `/book/1`。
 - `?page=<page-id>` 只在当前书籍的 `wiki/structure.json` 中解析。
 - 每本书必须先生成 `wiki/structure.json`、Markdown 页面和 `wiki/evidence.json`。
 
@@ -37,14 +37,14 @@ npm run build
 npm run preview -- --host 127.0.0.1
 ```
 
-Vite dev 和 preview 都支持上述 `/book`、`/book/<book-id>` 路径。
+Vite dev 和 preview 都支持上述 `/book`、`/book/<id>` 路径；非数字书籍路径不会解析为书籍。
 
 ## 非标准部署路径
 
 如果阅读器被部署到不是 `/book` 的路径，可以设置：
 
 ```text
-VITE_ONEBOOKWIKI_BASE_URL=/books/sample-book npm run dev
+VITE_ONEBOOKWIKI_BASE_URL=/books/1 npm run dev
 ```
 
 在标准 `/book` 路由下，URL 中的书籍路径优先于这个环境变量。
@@ -53,11 +53,11 @@ VITE_ONEBOOKWIKI_BASE_URL=/books/sample-book npm run dev
 
 `npm run build` 只生成前端 `dist/`，不会自动把 `books/` 复制进构建目录。生产服务器需要：
 
-1. 发布 `frontend/dist` 和所有书籍的 `books/<book-id>/wiki/` 静态文件。
-2. 将 `/book/<book-id>/wiki/...` 映射到对应的书籍目录。
-3. 保留 `/book/wiki/...` 到默认书籍的兼容映射。
-4. 将 `/book`、`/book/` 和 `/book/<book-id>` 的 HTML 导航请求重写到 `dist/index.html`。
-5. 不要把 `/book/<book-id>/wiki/...` 重写为 HTML；这些请求必须返回真实 JSON 或 Markdown 文件。
+1. 发布 `frontend/dist` 和所有书籍的 `books/<id>/wiki/` 静态文件。
+2. 将 `/book/<id>/wiki/...` 映射到对应的数字书籍目录。
+3. 将 `/book`、`/book/` 和 `/book/<id>` 的 HTML 导航请求重写到 `dist/index.html`。
+4. 不要把 `/book/<id>/wiki/...` 重写为 HTML；这些请求必须返回真实 JSON 或 Markdown 文件。
+5. 只接受不带前导零的正整数 `<id>`，不提供旧 slug URL 兼容。
 6. 保留查询字符串，以便 `?page=` 刷新后仍然有效。
 
 没有 SPA fallback 的静态主机无法直接刷新 `/book/<book-id>`，需要配置等价的 rewrite 规则。

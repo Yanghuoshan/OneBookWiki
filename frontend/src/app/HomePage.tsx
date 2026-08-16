@@ -14,7 +14,7 @@ export default function HomePage() {
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const pollTimers = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  const pollTimers = useRef<Map<number, ReturnType<typeof setInterval>>>(new Map());
   const booksRef = useRef<BookSummary[]>([]);
 
   // Keep booksRef in sync so poll callbacks see latest state
@@ -95,7 +95,7 @@ export default function HomePage() {
     await loadBooks();
   }
 
-  async function handleRetry(bookId: string) {
+  async function handleRetry(bookId: number) {
     try {
       await retryProcessing(bookId);
       setBooks((prev) =>

@@ -7,8 +7,7 @@ import { request as httpRequest } from 'node:http';
 
 
 const booksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books');
-const defaultBookId = 'zhenshi';
-const bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const bookIdPattern = /^[1-9]\d*$/;
 const contentTypes: Record<string, string> = {
   '.json': 'application/json; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
@@ -57,9 +56,7 @@ function parseBookRequest(requestUrl: string): BookRequest | null {
   const [first, ...remaining] = segments;
   const candidateRoot = resolve(booksRoot, first);
   const hasExplicitBook = bookIdPattern.test(first) && isWithin(booksRoot, candidateRoot) && isDirectory(candidateRoot);
-  return hasExplicitBook
-    ? { bookId: first, relativePath: remaining }
-    : { bookId: defaultBookId, relativePath: segments };
+  return hasExplicitBook ? { bookId: first, relativePath: remaining } : null;
 }
 
 function apiProxyMiddleware(): Connect.NextHandleFunction {

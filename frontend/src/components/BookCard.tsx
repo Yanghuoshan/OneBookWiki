@@ -3,7 +3,7 @@ import { getCoverUrl } from '../data/bookListLoader';
 
 type Props = {
   book: BookSummary;
-  onRetry?: (bookId: string) => void;
+  onRetry?: (bookId: number) => void;
 };
 
 const phaseLabels: Record<string, string> = {
@@ -17,7 +17,7 @@ const phaseLabels: Record<string, string> = {
   pending: '待处理',
 };
 
-function navigateToBook(bookId: string) {
+function navigateToBook(bookId: number) {
   window.location.href = `/book/${encodeURIComponent(bookId)}`;
 }
 

@@ -9,8 +9,8 @@ function isHomeRoute(pathname: string): boolean {
   if (path.startsWith('book/api')) return true;
   // Admin route
   if (path.startsWith('admin')) return false;
-  // Anything else under /book/<bookId>/... is a book reader route
-  return !path.startsWith('book/');
+  // Only canonical numeric paths resolve to a reader.
+  return !/^book\/[1-9]\d*\/?$/.test(path);
 }
 
 function isAdminRoute(pathname: string): boolean {

@@ -23,8 +23,9 @@ def _db(request: Request):
 @router.get("/stats")
 def admin_stats(request: Request):
     """Return dashboard summary statistics."""
-    from server.database import get_admin_stats
+    from server.database import get_admin_stats, refresh_token_usage
 
+    refresh_token_usage(_db(request), BOOKS_ROOT)
     stats = get_admin_stats(_db(request))
     return JSONResponse(stats)
 
@@ -33,7 +34,7 @@ def admin_stats(request: Request):
 
 
 @router.delete("/books/{book_id}")
-def delete_book_endpoint(book_id: str, request: Request):
+def delete_book_endpoint(book_id: int, request: Request):
     """Delete a book from database and its files on disk."""
     from server.database import delete_book, get_book, insert_operation_log
 
@@ -58,7 +59,7 @@ def delete_book_endpoint(book_id: str, request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete book record")
 
     # Remove book directory from disk
-    book_dir = BOOKS_ROOT / book_id
+    book_dir = BOOKS_ROOT / str(book_id)
     if book_dir.is_dir():
         shutil.rmtree(book_dir)
 
@@ -69,7 +70,7 @@ def delete_book_endpoint(book_id: str, request: Request):
 
 
 @router.patch("/books/{book_id}")
-def update_book_endpoint(book_id: str, body: dict, request: Request):
+def update_book_endpoint(book_id: int, body: dict, request: Request):
     """Update editable book metadata (title, author, description)."""
     from server.database import get_book, insert_operation_log, update_book_metadata
 
@@ -113,7 +114,7 @@ def update_book_endpoint(book_id: str, body: dict, request: Request):
 @router.get("/operations")
 def list_operations(
     request: Request,
-    book_id: str | None = None,
+    book_id: int | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
@@ -131,8 +132,11 @@ def list_operations(
 
 @router.get("/tokens")
 def get_all_token_usage(request: Request):
-    """Return aggregated token usage across all books (from DB, no disk scan)."""
+    """Return aggregated token usage across all books."""
+    from server.database import refresh_token_usage
+
     conn = _db(request)
+    refresh_token_usage(conn, BOOKS_ROOT)
     rows = conn.execute(
         """SELECT id, title, prompt_tokens, completion_tokens, total_tokens
            FROM books WHERE phase != 'empty' AND total_tokens > 0
@@ -164,12 +168,13 @@ def get_all_token_usage(request: Request):
 
 
 @router.get("/tokens/{book_id}")
-def get_book_token_usage(book_id: str, request: Request):
+def get_book_token_usage(book_id: int, request: Request):
     """Return detailed token usage for a single book."""
-    from server.database import get_book
+    from server.database import get_book, refresh_token_usage
 
+    refresh_token_usage(_db(request), BOOKS_ROOT, book_id)
     book = get_book(_db(request), book_id)
-    usage_file = BOOKS_ROOT / book_id / ".onebookwiki" / "usage.jsonl"
+    usage_file = BOOKS_ROOT / str(book_id) / ".onebookwiki" / "usage.jsonl"
 
     result = {
         "book_id": book_id,

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from server.database import init_db, migrate_existing_books, migrate_token_usage, reset_stuck_books
+from server.database import init_db, reset_stuck_books
 from server.routes import books, upload
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -29,15 +29,10 @@ async def lifespan(app: FastAPI):
     """Initialize database on startup, close on shutdown."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = init_db(str(DB_PATH))
-    count = migrate_existing_books(conn, BOOKS_ROOT)
     stuck = reset_stuck_books(conn)
-    token_count = migrate_token_usage(conn, BOOKS_ROOT)
     print(f"[onebookwiki] Database initialized at {DB_PATH}")
-    print(f"[onebookwiki] Migrated {count} existing book(s)")
     if stuck:
         print(f"[onebookwiki] Reset {stuck} stuck book(s) to failed state (interrupted processing)")
-    if token_count:
-        print(f"[onebookwiki] Migrated token usage for {token_count} book(s)")
     app.state.db = conn
     yield
     if hasattr(app.state, "db"):
@@ -73,7 +68,7 @@ if BOOKS_ROOT.is_dir():
 
 @app.post("/api/books/{book_id}/process")
 def retry_processing_endpoint(
-    book_id: str,
+    book_id: int,
     request: Request,
     background_tasks: BackgroundTasks,
 ):
@@ -132,13 +127,17 @@ if _is_production and FRONTEND_DIST.is_dir():
         # API, frontend assets, docs — let them through unchanged
         if path.startswith(("/api", "/assets", "/docs", "/openapi.json")):
             return await call_next(request)
-        # /book/<id>/<file...> real file requests (wiki/*.json, *.md, covers) → StaticFiles;
-        # bare /book, /book/, and /book/<bookId> are SPA navigation routes → index.html
+        # Only numeric book IDs are valid. Real book files stay with StaticFiles;
+        # bare /book and /book/<id> navigation requests use the SPA entry point.
         if path.startswith("/book/"):
             rest = path[len("/book/"):]
-            if "/" in rest:  # deeper path → likely a file
-                return await call_next(request)
-        # Everything else (incl. /book, /book/, /book/<bookId>) → index.html
+            if rest:
+                book_id, separator, relative_path = rest.partition("/")
+                if not book_id.isdigit() or int(book_id) <= 0 or str(int(book_id)) != book_id:
+                    return JSONResponse({"detail": "Book URL must use a positive numeric ID"}, status_code=404)
+                if separator and relative_path:  # deeper path → real book file request
+                    return await call_next(request)
+        # Everything else (including /book, /book/, and /book/<id>) → index.html
         index_path = FRONTEND_DIST / "index.html"
         if index_path.is_file():
             return FileResponse(index_path)

@@ -7,13 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from server.main import app
 print("FastAPI app imported successfully")
 
-from server.database import init_db, migrate_existing_books
+from server.database import init_db
 
 DB_PATH = Path("books/onebookwiki.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 conn = init_db(str(DB_PATH))
-count = migrate_existing_books(conn, Path("books"))
-print(f"DB init OK, migrated {count} book(s)")
+print("DB init OK")
 
 books = conn.execute(
     "SELECT id, title, phase FROM books ORDER BY created_at DESC"

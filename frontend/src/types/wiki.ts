@@ -93,7 +93,7 @@ export type BookPhase =
   | "pending";
 
 export type BookSummary = {
-  id: string;
+  id: number;
   title: string;
   author?: string;
   format?: string;
@@ -110,7 +110,7 @@ export type BookSummary = {
 };
 
 export type BookStatus = {
-  bookId: string;
+  bookId: number;
   title: string;
   phase: BookPhase;
   error?: string | null;
@@ -120,7 +120,7 @@ export type BookStatus = {
 
 export type OperationLog = {
   id: number;
-  book_id: string;
+  book_id: number;
   book_title?: string;
   operation: string;
   phase?: string;
@@ -142,7 +142,7 @@ export type AdminStats = {
 };
 
 export type TokenBookEntry = {
-  book_id: string;
+  book_id: number;
   title: string;
   prompt_tokens: number;
   completion_tokens: number;
@@ -172,7 +172,7 @@ export type TokenEntry = {
 };
 
 export type TokenUsageDetail = {
-  book_id: string;
+  book_id: number;
   book_title: string;
   prompt_tokens: number;
   completion_tokens: number;

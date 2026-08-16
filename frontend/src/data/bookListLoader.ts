@@ -17,13 +17,13 @@ export async function fetchBookList(): Promise<BookSummary[]> {
   return data.books as BookSummary[];
 }
 
-export async function fetchBookStatus(bookId: string): Promise<BookStatus> {
+export async function fetchBookStatus(bookId: number): Promise<BookStatus> {
   const res = await fetch(`${API_BASE}/books/${encodeURIComponent(bookId)}/status`);
   if (!res.ok) throw new Error(`Failed to load status (HTTP ${res.status})`);
   return res.json() as Promise<BookStatus>;
 }
 
-export function getCoverUrl(bookId: string, coverPath?: string | null): string | undefined {
+export function getCoverUrl(bookId: number, coverPath?: string | null): string | undefined {
   if (coverPath) {
     return `/book/${encodeURIComponent(bookId)}/${coverPath}`;
   }
@@ -38,7 +38,7 @@ export class UploadError extends Error {
 }
 
 export type UploadResult = {
-  bookId: string;
+  bookId: number;
   title: string;
   phase: string;
 };
@@ -95,8 +95,8 @@ export async function uploadBook(
 }
 
 export async function retryProcessing(
-  bookId: string,
-): Promise<{ bookId: string; phase: string }> {
+  bookId: number,
+): Promise<{ bookId: number; phase: string }> {
   const res = await fetch(
     `${API_BASE}/books/${encodeURIComponent(bookId)}/process`,
     { method: 'POST' },
@@ -105,7 +105,7 @@ export async function retryProcessing(
     const body = await res.json().catch(() => ({}));
     throw new Error((body as { detail?: string }).detail || `Retry failed (HTTP ${res.status})`);
   }
-  return res.json() as Promise<{ bookId: string; phase: string }>;
+  return res.json() as Promise<{ bookId: number; phase: string }>;
 }
 
 // ── Admin API ────────────────────────────────────────────────────────────────
@@ -117,12 +117,12 @@ export async function fetchAdminStats(): Promise<AdminStats> {
 }
 
 export async function fetchOperations(
-  bookId?: string,
+  bookId?: number,
   limit = 100,
   offset = 0,
 ): Promise<{ logs: OperationLog[]; total: number; limit: number; offset: number }> {
   const params = new URLSearchParams();
-  if (bookId) params.set('book_id', bookId);
+  if (bookId !== undefined) params.set('book_id', String(bookId));
   params.set('limit', String(limit));
   params.set('offset', String(offset));
   const res = await fetch(`${API_BASE}/admin/operations?${params}`);
@@ -136,13 +136,13 @@ export async function fetchAllTokenUsage(): Promise<TokenUsageSummary> {
   return res.json();
 }
 
-export async function fetchBookTokenUsage(bookId: string): Promise<TokenUsageDetail> {
+export async function fetchBookTokenUsage(bookId: number): Promise<TokenUsageDetail> {
   const res = await fetch(`${API_BASE}/admin/tokens/${encodeURIComponent(bookId)}`);
   if (!res.ok) throw new Error(`Failed to load book token usage (HTTP ${res.status})`);
   return res.json();
 }
 
-export async function deleteBook(bookId: string): Promise<void> {
+export async function deleteBook(bookId: number): Promise<void> {
   const res = await fetch(`${API_BASE}/admin/books/${encodeURIComponent(bookId)}`, {
     method: 'DELETE',
   });
@@ -153,7 +153,7 @@ export async function deleteBook(bookId: string): Promise<void> {
 }
 
 export async function updateBookMetadata(
-  bookId: string,
+  bookId: number,
   updates: { title?: string; author?: string; description?: string },
 ): Promise<BookSummary> {
   const res = await fetch(`${API_BASE}/admin/books/${encodeURIComponent(bookId)}`, {

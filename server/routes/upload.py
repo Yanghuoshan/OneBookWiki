@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-import unicodedata
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
@@ -23,33 +24,6 @@ MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
 def _db(request: Request):
     return request.app.state.db
-
-
-def _slugify(filename_stem: str) -> str:
-    """Generate a clean book ID from a filename stem."""
-    # Normalize unicode to ASCII
-    normalized = unicodedata.normalize("NFKD", filename_stem).encode(
-        "ascii", "ignore"
-    ).decode("ascii")
-    # Replace non-alphanumeric chars with hyphens
-    slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", normalized).strip("_")
-    if not slug or not re.match(r"^[A-Za-z0-9]", slug):
-        slug = "book_" + (slug or "untitled")
-    return slug
-
-
-def _unique_book_id(conn, base_slug: str) -> str:
-    """Ensure a unique book ID by appending _2, _3, etc. if needed."""
-    from server.database import book_id_exists
-
-    candidate = base_slug
-    if not book_id_exists(conn, candidate):
-        return candidate
-
-    counter = 2
-    while book_id_exists(conn, f"{base_slug}_{counter}"):
-        counter += 1
-    return f"{base_slug}_{counter}"
 
 
 def _sha256_file(path: Path) -> str:
@@ -90,52 +64,51 @@ async def upload_book(
             detail=f"File too large. Maximum: 500 MB",
         )
 
-    # Generate book ID
     stem = Path(file.filename).stem
-    raw_slug = _slugify(stem)
-    book_id = _unique_book_id(_db(request), raw_slug)
+    source_format = ext.lstrip(".").upper()
 
-    # Create directory structure
-    source_dir = BOOKS_ROOT / book_id / "raw" / "source"
-    source_dir.mkdir(parents=True, exist_ok=True)
+    # Reserve the numeric ID before creating its matching on-disk book root.
+    from server.database import create_placeholder, delete_book, insert_operation_log
 
-    # Save the file
-    safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
-    dest_path = source_dir / safe_filename
-    dest_path.write_bytes(content)
-
-    # Compute hash
-    file_hash = _sha256_file(dest_path)
-
-    # Write minimal source.json
-    import json
-    import time
-
-    source_json = {
-        "schema_version": 3,
-        "title": stem,
-        "source_name": file.filename,
-        "format": ext.lstrip(".").upper(),
-        "source_hash": file_hash,
-        "locator_policy": "pending",
-    }
-    onebookwiki_dir = BOOKS_ROOT / book_id / ".onebookwiki"
-    onebookwiki_dir.mkdir(parents=True, exist_ok=True)
-    (onebookwiki_dir / "source.json").write_text(
-        json.dumps(source_json, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    # Insert placeholder in database
-    from server.database import insert_operation_log, insert_placeholder
-
-    insert_placeholder(
+    book_id = create_placeholder(
         _db(request),
-        book_id=book_id,
         title=stem,
-        format=ext.lstrip(".").upper(),
+        format=source_format,
         source_name=file.filename,
-        source_hash=file_hash,
     )
+    book_dir = BOOKS_ROOT / str(book_id)
+
+    try:
+        source_dir = book_dir / "raw" / "source"
+        source_dir.mkdir(parents=True, exist_ok=False)
+
+        safe_filename = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+        dest_path = source_dir / safe_filename
+        dest_path.write_bytes(content)
+        file_hash = _sha256_file(dest_path)
+
+        source_json = {
+            "schema_version": 3,
+            "title": stem,
+            "source_name": file.filename,
+            "format": source_format,
+            "source_hash": file_hash,
+            "locator_policy": "pending",
+        }
+        onebookwiki_dir = book_dir / ".onebookwiki"
+        onebookwiki_dir.mkdir(exist_ok=True)
+        (onebookwiki_dir / "source.json").write_text(
+            json.dumps(source_json, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        _db(request).execute(
+            "UPDATE books SET source_hash = ?, updated_at = datetime('now') WHERE id = ?",
+            (file_hash, book_id),
+        )
+        _db(request).commit()
+    except Exception:
+        shutil.rmtree(book_dir, ignore_errors=True)
+        delete_book(_db(request), book_id)
+        raise
 
     # Log upload operation
     insert_operation_log(

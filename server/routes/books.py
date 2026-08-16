@@ -26,7 +26,7 @@ def list_books(request: Request):
 
 
 @router.get("/books/{book_id}")
-def get_book_detail(book_id: str, request: Request):
+def get_book_detail(book_id: int, request: Request):
     """Return a single book's full information."""
     from server.database import get_book
 
@@ -37,7 +37,7 @@ def get_book_detail(book_id: str, request: Request):
 
 
 @router.get("/books/{book_id}/status")
-def get_book_status(book_id: str, request: Request):
+def get_book_status(book_id: int, request: Request):
     """Return the current processing phase and any error."""
     from server.database import get_book
 
@@ -53,7 +53,7 @@ def get_book_status(book_id: str, request: Request):
 
 
 @router.get("/books/{book_id}/cover")
-def get_book_cover(book_id: str, request: Request):
+def get_book_cover(book_id: int, request: Request):
     """Serve the cover image file."""
     from server.database import get_book
 
@@ -61,7 +61,7 @@ def get_book_cover(book_id: str, request: Request):
     if book is None or not book.get("cover_path"):
         raise HTTPException(status_code=404, detail="Cover not found")
 
-    cover_full_path = BOOKS_ROOT / book_id / book["cover_path"]
+    cover_full_path = BOOKS_ROOT / str(book_id) / book["cover_path"]
     if not cover_full_path.is_file():
         raise HTTPException(status_code=404, detail="Cover file missing")
 

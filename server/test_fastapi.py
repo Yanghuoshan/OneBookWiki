@@ -30,18 +30,18 @@ async def test():
             print(f"  Error: {r.text[:500]}")
 
         # Test single book
-        r = client.get("/api/books/aganben")
+        r = client.get("/api/books/1")
         print(f"Book detail: {r.status_code}")
         if r.status_code == 200:
             b = r.json()
             print(f"  {b['title']} - {b['page_count']} pages")
 
         # Test status
-        r = client.get("/api/books/aganben/status")
+        r = client.get("/api/books/1/status")
         print(f"Status: {r.status_code} {r.json() if r.status_code == 200 else r.text[:200]}")
 
         # Test missing book
-        r = client.get("/api/books/nonexistent")
+        r = client.get("/api/books/999999")
         print(f"Missing book: {r.status_code}")
 
         print("\nAll tests passed!")

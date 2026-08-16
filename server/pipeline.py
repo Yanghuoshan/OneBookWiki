@@ -24,7 +24,7 @@ def _find_source_file(source_dir: Path) -> Path | None:
 
 
 def _update_phase_safe(
-    conn: sqlite3.Connection, book_id: str, phase: str, error_message: str | None = None
+    conn: sqlite3.Connection, book_id: int, phase: str, error_message: str | None = None
 ) -> None:
     """Thread-safe phase update, reconnecting if needed."""
     try:
@@ -43,7 +43,7 @@ def _update_phase_safe(
 
 
 def run_pipeline(
-    book_id: str,
+    book_id: int,
     books_root: str | Path,
     conn: sqlite3.Connection,
     backend: str = "bge-m3",
@@ -59,7 +59,7 @@ def run_pipeline(
     from server.cover import extract_cover
 
     books_path = Path(books_root)
-    book_dir = books_path / book_id
+    book_dir = books_path / str(book_id)
     source_dir = book_dir / "raw" / "source"
 
     try:

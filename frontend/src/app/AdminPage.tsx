@@ -398,7 +398,7 @@ function OperationLogs({ books }: { books: BookSummary[] }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchOperations(bookId || undefined, limit, off);
+      const result = await fetchOperations(bookId ? Number(bookId) : undefined, limit, off);
       setLogs(result.logs);
       setTotal(result.total);
     } catch (e) {
@@ -485,12 +485,27 @@ function TokenUsage({ books }: { books: BookSummary[] }) {
 
   useEffect(() => {
     if (view !== 'summary') return;
-    setLoading(true);
-    setError(null);
-    fetchAllTokenUsage()
-      .then(setSummary)
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed'))
-      .finally(() => setLoading(false));
+    let disposed = false;
+    const load = async (initial = false) => {
+      if (initial) setLoading(true);
+      try {
+        const value = await fetchAllTokenUsage();
+        if (!disposed) {
+          setSummary(value);
+          setError(null);
+        }
+      } catch (e) {
+        if (!disposed) setError(e instanceof Error ? e.message : 'Failed');
+      } finally {
+        if (initial && !disposed) setLoading(false);
+      }
+    };
+    void load(true);
+    const timer = window.setInterval(() => { void load(); }, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
   }, [view]);
 
   return (
@@ -574,7 +589,7 @@ function TokenDetail({ books }: { books: BookSummary[] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadDetail = useCallback(async (bookId: string) => {
+  const loadDetail = useCallback(async (bookId: number) => {
     if (!bookId) { setDetail(null); return; }
     setLoading(true);
     setError(null);
@@ -589,7 +604,11 @@ function TokenDetail({ books }: { books: BookSummary[] }) {
   }, []);
 
   useEffect(() => {
-    loadDetail(selectedId);
+    const bookId = selectedId ? Number(selectedId) : 0;
+    void loadDetail(bookId);
+    if (!bookId) return;
+    const timer = window.setInterval(() => { void loadDetail(bookId); }, 3000);
+    return () => window.clearInterval(timer);
   }, [selectedId, loadDetail]);
 
   return (

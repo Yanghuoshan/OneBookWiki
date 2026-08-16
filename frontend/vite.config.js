@@ -25,8 +25,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { request as httpRequest } from 'node:http';
 var booksRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'books');
-var defaultBookId = 'zhenshi';
-var bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+var bookIdPattern = /^[1-9]\d*$/;
 var contentTypes = {
     '.json': 'application/json; charset=utf-8',
     '.md': 'text/markdown; charset=utf-8',
@@ -73,9 +72,28 @@ function parseBookRequest(requestUrl) {
     var first = segments[0], remaining = segments.slice(1);
     var candidateRoot = resolve(booksRoot, first);
     var hasExplicitBook = bookIdPattern.test(first) && isWithin(booksRoot, candidateRoot) && isDirectory(candidateRoot);
-    return hasExplicitBook
-        ? { bookId: first, relativePath: remaining }
-        : { bookId: defaultBookId, relativePath: segments };
+    return hasExplicitBook ? { bookId: first, relativePath: remaining } : null;
+}
+function apiProxyMiddleware() {
+    return function (req, res) {
+        var targetUrl = req.url || '/';
+        var options = {
+            hostname: 'localhost',
+            port: 8000,
+            path: '/api' + targetUrl,
+            method: req.method,
+            headers: __assign(__assign({}, req.headers), { host: 'localhost:8000' }),
+        };
+        var proxyReq = httpRequest(options, function (proxyRes) {
+            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+            proxyRes.pipe(res);
+        });
+        proxyReq.on('error', function () {
+            res.statusCode = 502;
+            res.end('Bad Gateway');
+        });
+        req.pipe(proxyReq);
+    };
 }
 function bookStaticMiddleware() {
     return function (request, response, next) {
@@ -103,29 +121,11 @@ export default defineConfig({
             name: 'onebookwiki-server',
             configureServer: function (server) {
                 server.middlewares.use('/book', bookStaticMiddleware());
-                // Proxy /api to FastAPI backend
-                server.middlewares.use('/api', function (req, res) {
-                    var targetUrl = req.url || '/';
-                    var options = {
-                        hostname: 'localhost',
-                        port: 8000,
-                        path: '/api' + targetUrl,
-                        method: req.method,
-                        headers: __assign(__assign({}, req.headers), { host: 'localhost:8000' }),
-                    };
-                    var proxyReq = httpRequest(options, function (proxyRes) {
-                        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-                        proxyRes.pipe(res);
-                    });
-                    proxyReq.on('error', function () {
-                        res.statusCode = 502;
-                        res.end('Bad Gateway');
-                    });
-                    req.pipe(proxyReq);
-                });
+                server.middlewares.use('/api', apiProxyMiddleware());
             },
             configurePreviewServer: function (server) {
                 server.middlewares.use('/book', bookStaticMiddleware());
+                server.middlewares.use('/api', apiProxyMiddleware());
             },
         },
     ],

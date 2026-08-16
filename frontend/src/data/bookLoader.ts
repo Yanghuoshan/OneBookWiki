@@ -1,16 +1,15 @@
 import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
 
 const configuredBase = ((import.meta.env.VITE_ONEBOOKWIKI_BASE_URL as string | undefined) || '/book').replace(/\/$/, '');
-const bookIdPattern = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const bookIdPattern = /^[1-9]\d*$/;
 
 function routeBookBase(pathname: string): string | undefined {
   const prefix = '/book';
   if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) return undefined;
   const suffix = pathname.slice(prefix.length).replace(/^\/+/, '');
   const firstSegment = suffix.split('/', 1)[0];
-  if (!firstSegment || firstSegment === 'wiki') return prefix;
   if (bookIdPattern.test(firstSegment)) return `${prefix}/${encodeURIComponent(firstSegment)}`;
-  return prefix;
+  return undefined;
 }
 
 export function resolveBookBase(pathname = window.location.pathname): string {
