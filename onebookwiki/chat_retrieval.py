@@ -13,7 +13,7 @@ from .providers import ProviderUnavailable, build_embedder
 from .remote_index import CloudVectorIndex
 from .retrieval import HybridRetriever, LexicalRetriever, Result, rerank_results, vector_results
 from .index import LocalIndex
-from .wiki_retrieval import assemble_wiki_first_context, build_wiki_first_prompt, search_artifacts, search_wiki
+from .wiki_retrieval import assemble_wiki_first_context, build_wiki_first_prompt, render_context_blocks, search_artifacts, search_wiki
 from .cli.chat_book import raw_results
 
 
@@ -137,6 +137,54 @@ def extract_citation_ids(text: str) -> set[str]:
     return {f"C{chapter}E{index}" for chapter, index in _EVIDENCE_ID_RE.findall(text or "")}
 
 
+def _wiki_evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Resolve CnEn citations embedded in selected wiki/artifact blocks through the rendered evidence index.
+
+    Wiki pages and generation artifacts already carry evidence IDs that were
+    validated once at generation time (see rendering.py / generation.py).
+    Re-validating them here against the manifest and raw source lets chat
+    answers grounded in curated Overview/Thesis prose (which rarely has a
+    matching raw-chunk hit) still cite real, checkable evidence instead of
+    being refused outright.
+    """
+    evidence_path = root / "wiki" / "evidence.json"
+    try:
+        rendered = json.loads(evidence_path.read_text(encoding="utf-8")).get("evidence", {})
+    except (OSError, ValueError, AttributeError):
+        return []
+    ids: set[str] = set()
+    for chunk in chunks:
+        ids.update(extract_citation_ids(str(chunk.get("text", ""))))
+    valid: list[dict[str, Any]] = []
+    for evidence_id in sorted(ids):
+        value = rendered.get(evidence_id)
+        if not isinstance(value, dict):
+            continue
+        ref = EvidenceRef(
+            evidence_id=str(value.get("evidence_id", evidence_id)),
+            chunk_id=str(value.get("chunk_id", "")),
+            source_path=str(value.get("source_path", "")),
+            chapter=int(value.get("chapter", 0) or 0),
+            start_line=int(value.get("start_line", 0) or 0),
+            end_line=int(value.get("end_line", 0) or 0),
+            quote=str(value.get("quote", "")),
+            locator=dict(value.get("locator") or {}),
+        )
+        if not ref.evidence_id or validate_evidence(root, [ref]):
+            continue
+        valid.append({
+            "evidence_id": ref.evidence_id,
+            "chunk_id": ref.chunk_id,
+            "source_path": ref.source_path,
+            "chapter": ref.chapter,
+            "start_line": ref.start_line,
+            "end_line": ref.end_line,
+            "quote": ref.quote,
+            "text": "",
+        })
+    return valid
+
+
 def retrieve_chat_context(
     root: Path,
     question: str,
@@ -151,23 +199,36 @@ def retrieve_chat_context(
     artifacts = search_artifacts(root, question, 2)
     raw = rerank_results(question, _strict_raw_results(root, question, backend=backend, retrieval=retrieval), "local")
     context, selected = assemble_wiki_first_context(wiki, artifacts, raw, max_tokens, 3, 2, 3)
-    raw_selected = _evidence_records(root, [item for item in selected if item.get("source_kind") == "raw"])
-    if not raw_selected:
-        raise ChatRetrievalError("raw_evidence_missing", "没有找到可验证的原始证据，无法回答该问题。")
-    allowed = {item["evidence_id"] for item in raw_selected}
+    raw_items = [item for item in selected if item.get("source_kind") == "raw"]
+    raw_selected = _evidence_records(root, raw_items)
+    # Stamp each raw block with its resolved, validated evidence_id so the
+    # rendered context (and therefore the model) can see and cite the exact
+    # CnEn tag for that block, instead of being told to cite an ID it was
+    # never shown.
+    by_chunk_id = {item["chunk_id"]: item["evidence_id"] for item in raw_selected}
+    for item in raw_items:
+        evidence_id = by_chunk_id.get(str(item.get("chunk_id", "")))
+        if evidence_id:
+            item["evidence_id"] = evidence_id
+    wiki_selected = _wiki_evidence_records(root, [item for item in selected if item.get("source_kind") in {"wiki", "artifact"}])
+    combined_evidence = raw_selected + wiki_selected
+    if not combined_evidence:
+        raise ChatRetrievalError("raw_evidence_missing", "没有找到可验证的证据，无法回答该问题。")
+    allowed = {item["evidence_id"] for item in combined_evidence}
+    context = render_context_blocks(selected)
     history_text = "\n".join(
         f"{item.get('role', 'user').upper()}: {str(item.get('content', '')).strip()}"
         for item in history[-20:]
         if str(item.get("content", "")).strip()
     )
-    prompt = build_wiki_first_prompt(question, context)
+    prompt = build_wiki_first_prompt(question, context, sorted(allowed))
     if history_text:
         prompt = f"CONVERSATION HISTORY (untrusted context, not evidence):\n{history_text}\n\n{prompt}"
     return {
         "prompt": prompt,
         "context": context,
         "selected": selected,
-        "raw_evidence": raw_selected,
+        "raw_evidence": combined_evidence,
         "allowed_evidence_ids": sorted(allowed),
     }
 

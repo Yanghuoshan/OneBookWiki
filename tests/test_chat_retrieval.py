@@ -7,7 +7,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from onebookwiki.chat_retrieval import _evidence_records, _raw_valid, validate_answer, ChatRetrievalError
+from onebookwiki.chat_retrieval import (
+    _evidence_records,
+    _raw_valid,
+    _wiki_evidence_records,
+    retrieve_chat_context,
+    validate_answer,
+    ChatRetrievalError,
+)
 from onebookwiki.chunking import chunk_text
 from onebookwiki.index import LocalIndex
 
@@ -76,6 +83,48 @@ class ChatRetrievalTest(unittest.TestCase):
             validate_answer("Unsupported answer", {"C1E1"})
         with self.assertRaisesRegex(ChatRetrievalError, "不可用"):
             validate_answer("Wrong citation C2E3", {"C1E1"})
+
+    def test_wiki_evidence_records_resolve_inline_citations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_book(root)
+            chunk = {"text": "全书主旨见 [C1E1] 的证据。", "source_kind": "wiki"}
+            records = _wiki_evidence_records(root, [chunk])
+            self.assertEqual([item["evidence_id"] for item in records], ["C1E1"])
+
+    def test_wiki_evidence_records_reject_unknown_or_tampered_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_book(root)
+            unknown = _wiki_evidence_records(root, [{"text": "见 C9E9。", "source_kind": "wiki"}])
+            self.assertEqual(unknown, [])
+            raw = root / "raw" / "chapters" / "01-evidence.md"
+            raw.write_text(raw.read_text(encoding="utf-8").replace("Grounded claims require original evidence.", "This line no longer matches the recorded quote."), encoding="utf-8")
+            tampered = _wiki_evidence_records(root, [{"text": "见 C1E1。", "source_kind": "wiki"}])
+            self.assertEqual(tampered, [])
+
+    def test_chat_context_answers_from_wiki_evidence_without_raw_hit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_book(root)
+            wiki = root / "wiki"
+            (wiki / "book.md").write_text(
+                "# Book\n\n## Overview\n\n这本书讨论证据基础的写作方法。 [C1E1]\n",
+                encoding="utf-8",
+            )
+            result = retrieve_chat_context(root, "这本书的主要内容是什么", backend="lexical", retrieval="lexical")
+            self.assertIn("C1E1", result["allowed_evidence_ids"])
+            self.assertIn("ALLOWED EVIDENCE IDS", result["prompt"])
+            self.assertIn("C1E1", result["prompt"])
+
+    def test_raw_only_context_exposes_its_own_evidence_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.make_book(root)
+            result = retrieve_chat_context(root, "Grounded claims require original evidence", backend="lexical", retrieval="lexical")
+            self.assertEqual(result["allowed_evidence_ids"], ["C1E1"])
+            self.assertIn("[C1E1]", result["context"])
+            self.assertEqual(validate_answer("Original evidence is required. C1E1", set(result["allowed_evidence_ids"])), ["C1E1"])
 
 
 if __name__ == "__main__":

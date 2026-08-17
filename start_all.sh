@@ -35,6 +35,9 @@ case "${1:-start}" in
     start)
         echo "Starting OneBookWiki server and chat worker..."
 
+        # Create logs directory first
+        mkdir -p logs
+
         # Start chat worker in background
         echo "Starting chat worker..."
         "$PYTHON" -m server.chat_worker > logs/chat_worker.log 2>&1 &
@@ -42,7 +45,6 @@ case "${1:-start}" in
         echo "Chat worker started (PID: $WORKER_PID)"
 
         # Store PIDs for stop command
-        mkdir -p logs
         echo "$WORKER_PID" > logs/worker.pid
 
         # Start server (foreground)
