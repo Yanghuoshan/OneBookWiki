@@ -1,35 +1,32 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { loadBook, resolveBookBase } from '../data/bookLoader';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { citationToEvidenceRecord, loadBook, resolveBookBase } from '../data/bookLoader';
 import { appendConversationTurn, getConversation } from '../data/chatLoader';
-import type { ChatConversation, EvidenceIndex, EvidenceRecord, WikiPage, WikiStructure } from '../types/wiki';
+import type { ChatConversation, ChatTurn, EvidenceIndex, EvidenceRecord, WikiPage, WikiStructure } from '../types/wiki';
 import MarkdownReader from '../components/MarkdownReader';
 import PageTree from '../components/PageTree';
-import SourcePanel from '../components/SourcePanel';
 import ChatComposer from '../components/ChatComposer';
+import EvidenceCard from '../components/EvidenceCard';
 
 type Props = { bookId: number; conversationId: string };
 
-const NAVIGATION_WIDTH = 280;
-const SOURCE_PANEL_DEFAULT_WIDTH = 320;
-const SOURCE_PANEL_MIN_WIDTH = 240;
-const SOURCE_PANEL_MAX_WIDTH = 760;
-const CONTENT_MIN_WIDTH = 360;
 const POLL_INTERVAL_MS = 1000;
 const activeStatuses = new Set(['queued', 'retrieving', 'generating']);
 
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(Math.max(value, minimum), maximum);
+function dedupeCitations(citations: ChatTurn['citations']): ChatTurn['citations'] {
+  const seen = new Set<string>();
+  return citations.filter(citation => {
+    if (seen.has(citation.evidence_id)) return false;
+    seen.add(citation.evidence_id);
+    return true;
+  });
 }
 
 export default function ChatPage({ bookId, conversationId }: Props) {
   const [structure, setStructure] = useState<WikiStructure | null>(null);
   const [evidence, setEvidence] = useState<EvidenceIndex>({ evidence: {} });
   const [conversation, setConversation] = useState<ChatConversation | null>(null);
-  const [source, setSource] = useState<EvidenceRecord | null>(null);
-  const [sourcePanelWidth, setSourcePanelWidth] = useState(SOURCE_PANEL_DEFAULT_WIDTH);
-  const [gridWidth, setGridWidth] = useState(0);
+  const [focusedEvidenceId, setFocusedEvidenceId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const gridRef = useRef<HTMLElement>(null);
   const bookBase = useMemo(() => resolveBookBase(`/book/${bookId}/ask/${conversationId}`), [bookId, conversationId]);
 
   const loadConversation = useCallback(async () => {
@@ -68,29 +65,19 @@ export default function ChatPage({ bookId, conversationId }: Props) {
     return () => window.clearInterval(timer);
   }, [active, loadConversation]);
 
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (!grid) return;
-    const updateGridWidth = () => setGridWidth(grid.clientWidth);
-    updateGridWidth();
-    const observer = new ResizeObserver(updateGridWidth);
-    observer.observe(grid);
-    return () => observer.disconnect();
-  }, [structure]);
-
   if (error && !conversation) return <div className="status-screen error-screen"><h1>无法打开回答</h1><p>{error}</p></div>;
   if (!conversation || !structure) return <div className="status-screen"><div className="loader-mark">◎</div><p>正在加载回答...</p></div>;
 
   const pagesByPath = new Map(structure.pages.map(page => [page.path, page]));
-  const sourcePanelMaximumWidth = Math.max(
-    SOURCE_PANEL_MIN_WIDTH,
-    Math.min(SOURCE_PANEL_MAX_WIDTH, gridWidth - NAVIGATION_WIDTH - CONTENT_MIN_WIDTH),
-  );
-  const effectiveSourcePanelWidth = clamp(sourcePanelWidth, SOURCE_PANEL_MIN_WIDTH, sourcePanelMaximumWidth);
-  const gridStyle = { '--source-panel-width': `${effectiveSourcePanelWidth}px` } as CSSProperties;
 
   const openWikiPage = (page: WikiPage) => {
     window.location.assign(`/book/${bookId}?page=${encodeURIComponent(page.id)}`);
+  };
+
+  const focusEvidence = (record: EvidenceRecord) => {
+    setFocusedEvidenceId(record.evidence_id);
+    const card = document.querySelector(`[data-evidence-id="${record.evidence_id}"]`);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   const submitFollowUp = async (question: string) => {
@@ -105,7 +92,7 @@ export default function ChatPage({ bookId, conversationId }: Props) {
         <div className="book-heading"><span className="eyebrow">EVIDENCE-GROUNDED ANSWERS</span><h1>{conversation.book_title}</h1></div>
         <div className="topbar-meta">Conversation</div>
       </header>
-      <main ref={gridRef} className="reader-grid chat-reader-grid" data-source-open={Boolean(source)} style={gridStyle}>
+      <main className="reader-grid chat-reader-grid">
         <aside className="navigation-pane">
           <p className="pane-label">READING MAP</p>
           <p className="description">回答会重新检索本书中的可验证证据。</p>
@@ -120,34 +107,42 @@ export default function ChatPage({ bookId, conversationId }: Props) {
             </div>
             {error && <p className="chat-refresh-error" role="alert">{error}</p>}
             <div className="chat-thread">
-              {conversation.turns.map(turn => (
-                <article className={`chat-turn chat-turn--${turn.status}`} key={turn.id}>
-                  <div className="chat-question"><span className="chat-role">问题 {turn.turn_no}</span><p>{turn.question}</p></div>
-                  <div className="chat-answer">
-                    {activeStatuses.has(turn.status) ? (
-                      <p className="chat-pending">正在检索书籍证据并生成回答...</p>
-                    ) : turn.answer ? (
-                      <div className="markdown-body"><MarkdownReader content={turn.answer} evidence={evidence} pagePath="chat-answer.md" pagesByPath={pagesByPath} onCitation={setSource} onPageLink={openWikiPage} /></div>
-                    ) : (
-                      <p className="chat-result-error">{turn.refusal_code ? `证据不足：${turn.refusal_code}` : turn.error_message || '该问题未能生成回答。'}</p>
-                    )}
-                  </div>
-                </article>
-              ))}
+              {conversation.turns.map(turn => {
+                const turnEvidence = dedupeCitations(turn.citations).map(citation => citationToEvidenceRecord(citation, evidence));
+                return (
+                  <article className={`chat-turn chat-turn--${turn.status}`} key={turn.id}>
+                    <div className="chat-turn-main">
+                      <div className="chat-question"><span className="chat-role">问题 {turn.turn_no}</span><p>{turn.question}</p></div>
+                      <div className="chat-answer">
+                        {activeStatuses.has(turn.status) ? (
+                          <p className="chat-pending">正在检索书籍证据并生成回答...</p>
+                        ) : turn.answer ? (
+                          <div className="markdown-body"><MarkdownReader content={turn.answer} evidence={evidence} pagePath="chat-answer.md" pagesByPath={pagesByPath} onCitation={focusEvidence} onPageLink={openWikiPage} /></div>
+                        ) : (
+                          <p className="chat-result-error">{turn.refusal_code ? `证据不足：${turn.refusal_code}` : turn.error_message || '该问题未能生成回答。'}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="chat-turn-evidence">
+                      <span className="chat-turn-evidence-label">证据</span>
+                      {turnEvidence.length > 0 ? turnEvidence.map(record => (
+                        <EvidenceCard
+                          key={record.evidence_id}
+                          record={record}
+                          cardId={record.evidence_id}
+                          highlighted={focusedEvidenceId === record.evidence_id}
+                        />
+                      )) : <p className="chat-turn-evidence-empty">{activeStatuses.has(turn.status) ? '检索中...' : '此回答暂无引用证据。'}</p>}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </div>
           <div className="chat-composer-container">
             <ChatComposer onSubmit={submitFollowUp} disabled={active} compact />
           </div>
         </section>
-        {source && <SourcePanel
-          record={source}
-          width={effectiveSourcePanelWidth}
-          minWidth={SOURCE_PANEL_MIN_WIDTH}
-          maxWidth={sourcePanelMaximumWidth}
-          onWidthChange={setSourcePanelWidth}
-          onClose={() => setSource(null)}
-        />}
       </main>
     </div>
   );

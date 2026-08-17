@@ -1,4 +1,4 @@
-import type { EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
+import type { ChatCitation, EvidenceIndex, EvidenceRecord, SourceOutlineNode, WikiPage, WikiSection, WikiStructure } from '../types/wiki';
 
 const configuredBase = ((import.meta.env.VITE_ONEBOOKWIKI_BASE_URL as string | undefined) || '/book').replace(/\/$/, '');
 const bookIdPattern = /^[1-9]\d*$/;
@@ -134,6 +134,18 @@ export function formatLocator(record: EvidenceRecord): string {
 
 export function resolveEvidence(id: string, evidence: EvidenceIndex): EvidenceRecord | undefined {
   return evidence.evidence[id] || evidence.evidence[id.replace(/^onebookwiki:\/\/evidence\//, '')];
+}
+
+export function citationToEvidenceRecord(citation: ChatCitation, evidence: EvidenceIndex): EvidenceRecord {
+  return resolveEvidence(citation.evidence_id, evidence) || {
+    evidence_id: citation.evidence_id,
+    chunk_id: citation.chunk_id,
+    source_path: citation.source_path,
+    chapter: citation.chapter,
+    start_line: citation.start_line,
+    end_line: citation.end_line,
+    quote: citation.quote,
+  };
 }
 
 export async function loadBook(base = resolveBookBase()): Promise<{ structure: WikiStructure; evidence: EvidenceIndex }> {
