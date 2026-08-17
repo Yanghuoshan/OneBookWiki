@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters, generate_wiki as do_generate_wiki, resume_generation, synthesize_book, write_generation_snapshot
-from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder
 from onebookwiki.rendering import render_artifacts
+from onebookwiki.wiki_vector_index import build_wiki_vector_indexes
 
 
 def options(args: argparse.Namespace) -> GenerationOptions:
@@ -25,6 +26,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("project_root")
         command.add_argument("--provider", default="none")
         command.add_argument("--model")
+        command.add_argument("--embedding-backend", choices=("bge-m3", "modelscope"), default="bge-m3")
         command.add_argument("--language", default="zh-CN")
         command.add_argument("--max-input-tokens", type=int, default=12000)
         command.add_argument("--max-output-tokens", type=int, default=CANONICAL_GENERATION_MAX_OUTPUT_TOKENS)
@@ -61,8 +63,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         files = render_artifacts(root)
         print(f"rendered {len(files)} wiki file(s)")
+        layers = build_wiki_vector_indexes(root, build_embedder(args.embedding_backend))
+        print("built rendered-wiki vector layers: " + ", ".join(
+            f"{item.layer}: {item.documents} documents/{item.chunks} chunks" for item in layers
+        ))
         return 0
-    except (GenerationError, ValueError, OSError) as error:
+    except (GenerationError, ProviderUnavailable, ValueError, OSError) as error:
         print(f"generation failed: {error}", file=sys.stderr)
         return 1
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from server.config import ChatSettings, generation_snapshot
+from server.config import ChatSettings, agent_policy_snapshot, generation_snapshot
 from server.database import append_chat_turn, create_chat_conversation, get_book, get_chat_conversation
 from onebookwiki.providers import GenerationConfig
 
@@ -36,6 +36,25 @@ def configured_generation() -> dict[str, Any]:
     return generation_snapshot(config.provider, config.model, config.max_output_tokens)
 
 
+def _book_agent_policy(books_root: Path, book_id: int, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Use the rendered wiki index identity for an immutable conversation policy."""
+    manifest_path = books_root / str(book_id) / ".onebookwiki" / "retrieval" / "wiki-vectors.json"
+    try:
+        manifest = __import__("json").loads(manifest_path.read_text(encoding="utf-8"))
+        identity = dict(manifest.get("identity") or {})
+        backend = str(identity.get("backend", ""))
+        if not backend:
+            raise ValueError("missing identity")
+    except (OSError, TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="Book semantic retrieval indexes are unavailable; rebuild the wiki first")
+    existing = snapshot.get("agent_policy")
+    if isinstance(existing, dict):
+        policy = dict(existing)
+        policy["embedding_backend"] = backend
+        return policy
+    return agent_policy_snapshot(backend)
+
+
 def create_conversation(conn, books_root: Path, book_id: int, question: str, settings: ChatSettings) -> tuple[str, str]:
     book = get_book(conn, book_id)
     if book is None:
@@ -54,6 +73,15 @@ def create_conversation(conn, books_root: Path, book_id: int, question: str, set
             raise HTTPException(status_code=409, detail="Book generation configuration is invalid")
     else:
         raise HTTPException(status_code=409, detail="Book has no generation configuration snapshot; regenerate the wiki first")
+    generation["agent_policy"] = _book_agent_policy(books_root, book_id, generation)
+    # The snapshot is immutable per conversation. Preserve compatibility with
+    # old book snapshots without mutating their on-disk generation profile.
+    generation = generation_snapshot(
+        str(generation["provider"]),
+        str(generation["model"]),
+        int(generation["max_output_tokens"]),
+        dict(generation["agent_policy"]),
+    )
     return create_chat_conversation(conn, book_id, _validate_question(question, settings), generation)
 
 

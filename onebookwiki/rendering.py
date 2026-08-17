@@ -604,7 +604,14 @@ def render_book(book: BookSynthesis, chapters: list[ChapterInterpretation], root
         for _, claim, slug in records:
             page_id = f"{singular}-{slug}"
             entity_pages.append(page_id)
-            pages.append({"id": page_id, "title": _replace_inline_citation_labels(claim.text, evidence_by_id), "path": f"{kind}/{slug}.md", "kind": singular, "relatedPages": ["book", "index"]})
+            pages.append({
+                "id": page_id,
+                "title": _replace_inline_citation_labels(claim.text, evidence_by_id),
+                "path": f"{kind}/{slug}.md",
+                "kind": singular,
+                "evidenceIds": list(claim.evidence_ids),
+                "relatedPages": ["book", "index"],
+            })
     pages.extend([
         {"id": "review-questions", "title": "Review Questions", "path": "review/questions.md", "kind": "review", "relatedPages": ["book", "index"]},
         {"id": "review-flashcards", "title": "Flashcards", "path": "review/flashcards.md", "kind": "review", "relatedPages": ["book", "index"]},

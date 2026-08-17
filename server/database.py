@@ -97,6 +97,28 @@ CREATE TABLE IF NOT EXISTS chat_jobs (
     FOREIGN KEY(turn_id) REFERENCES chat_turns(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_chat_jobs_status ON chat_jobs(status, lease_until, created_at);
+
+CREATE TABLE IF NOT EXISTS chat_agent_steps (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id                  TEXT NOT NULL,
+    attempt                  INTEGER NOT NULL,
+    step_no                  INTEGER NOT NULL,
+    phase                    TEXT NOT NULL,
+    action                   TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    request_json             TEXT NOT NULL DEFAULT '{}',
+    result_json              TEXT NOT NULL DEFAULT '{}',
+    error_code               TEXT,
+    prompt_hash              TEXT,
+    provider_request_id      TEXT,
+    prompt_tokens            INTEGER NOT NULL DEFAULT 0,
+    completion_tokens        INTEGER NOT NULL DEFAULT 0,
+    total_tokens             INTEGER NOT NULL DEFAULT 0,
+    created_at               TEXT NOT NULL,
+    FOREIGN KEY(turn_id) REFERENCES chat_turns(id) ON DELETE CASCADE,
+    UNIQUE(turn_id, attempt, step_no)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_agent_steps_turn ON chat_agent_steps(turn_id, attempt, step_no);
 """
 
 _book_creation_lock = threading.Lock()
@@ -457,8 +479,9 @@ def complete_chat_turn(
             return False
         if claimed_by is not None:
             owned = conn.execute(
-                "SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed' AND claimed_by = ?",
-                (turn_id, claimed_by),
+                """SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed'
+                   AND claimed_by = ? AND lease_until IS NOT NULL AND lease_until >= ?""",
+                (turn_id, claimed_by, now),
             ).fetchone()
             if owned is None:
                 conn.rollback()
@@ -492,11 +515,13 @@ def complete_chat_turn(
 
 def mark_chat_turn_generating(conn: sqlite3.Connection, turn_id: str, claimed_by: str) -> bool:
     """Advance a turn only while the requesting worker still owns its lease."""
+    now = _now()
     try:
         conn.execute("BEGIN IMMEDIATE")
         owned = conn.execute(
-            "SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed' AND claimed_by = ?",
-            (turn_id, claimed_by),
+            """SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed'
+               AND claimed_by = ? AND lease_until IS NOT NULL AND lease_until >= ?""",
+            (turn_id, claimed_by, now),
         ).fetchone()
         if owned is None:
             conn.rollback()
@@ -509,6 +534,94 @@ def mark_chat_turn_generating(conn: sqlite3.Connection, turn_id: str, claimed_by
     except Exception:
         conn.rollback()
         raise
+
+
+def chat_job_owned(conn: sqlite3.Connection, turn_id: str, worker_id: str) -> bool:
+    """Return whether a worker owns a non-expired chat-job lease."""
+    row = conn.execute(
+        """SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed'
+           AND claimed_by = ? AND lease_until IS NOT NULL AND lease_until >= ?""",
+        (turn_id, worker_id, _now()),
+    ).fetchone()
+    return row is not None
+
+
+def renew_chat_lease(conn: sqlite3.Connection, turn_id: str, worker_id: str, lease_seconds: int) -> bool:
+    """Extend the current worker's lease without reviving an expired claim."""
+    now = _now()
+    expires = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + max(1, lease_seconds)))
+    cursor = conn.execute(
+        """UPDATE chat_jobs SET lease_until = ?, updated_at = ?
+           WHERE turn_id = ? AND status = 'claimed' AND claimed_by = ?
+           AND lease_until IS NOT NULL AND lease_until >= ?""",
+        (expires, now, turn_id, worker_id, now),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def append_chat_agent_step(
+    conn: sqlite3.Connection,
+    turn_id: str,
+    attempt: int,
+    event: Any,
+    *,
+    claimed_by: str,
+) -> bool:
+    """Append compact agent trace data only while the worker retains ownership."""
+    now = _now()
+    usage = getattr(event, "usage", None) or {}
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        owned = conn.execute(
+            """SELECT 1 FROM chat_jobs WHERE turn_id = ? AND status = 'claimed'
+               AND claimed_by = ? AND lease_until IS NOT NULL AND lease_until >= ?""",
+            (turn_id, claimed_by, now),
+        ).fetchone()
+        if owned is None:
+            conn.rollback()
+            return False
+        conn.execute(
+            """INSERT INTO chat_agent_steps
+               (turn_id, attempt, step_no, phase, action, status, request_json, result_json,
+                error_code, prompt_hash, provider_request_id, prompt_tokens, completion_tokens,
+                total_tokens, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                turn_id, int(attempt), int(getattr(event, "step_no", 0)), str(getattr(event, "phase", "")),
+                str(getattr(event, "action", "")), str(getattr(event, "status", "completed")),
+                json.dumps(getattr(event, "request", {}) or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(getattr(event, "result", {}) or {}, ensure_ascii=False, sort_keys=True),
+                getattr(event, "error_code", None), getattr(event, "prompt_hash", None),
+                getattr(event, "provider_request_id", None), int(usage.get("prompt_tokens", 0)),
+                int(usage.get("completion_tokens", 0)), int(usage.get("total_tokens", 0)), now,
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def get_chat_agent_trace(conn: sqlite3.Connection, turn_id: str) -> list[dict[str, Any]]:
+    """Return sanitized, ordered agent action records for the admin audit API."""
+    rows = conn.execute(
+        """SELECT attempt, step_no, phase, action, status, request_json, result_json, error_code,
+                  prompt_hash, provider_request_id, prompt_tokens, completion_tokens, total_tokens, created_at
+           FROM chat_agent_steps WHERE turn_id = ? ORDER BY attempt, step_no""",
+        (turn_id,),
+    ).fetchall()
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        value = _row_to_dict(row)
+        for field in ("request_json", "result_json"):
+            try:
+                value[field[:-5]] = json.loads(value.pop(field))
+            except (TypeError, ValueError):
+                value[field[:-5]] = {}
+        output.append(value)
+    return output
 
 
 def reset_stuck_chat_jobs(conn: sqlite3.Connection) -> int:

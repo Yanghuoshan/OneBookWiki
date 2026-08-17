@@ -7,8 +7,9 @@ from pathlib import Path
 
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_wiki as do_generate_wiki, resume_generation
 from onebookwiki.importers import ImportOptions, detect_source_type, import_document
-from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder
 from onebookwiki.rendering import render_artifacts
+from onebookwiki.wiki_vector_index import build_wiki_vector_indexes
 from onebookwiki.checkpoints import CheckpointStore
 
 # Use the established index implementations from the CLI package.
@@ -146,6 +147,29 @@ def main(argv: list[str] | None = None) -> int:
         print("[4/4] rendering Wikipedia-style Markdown")
         pages = render_artifacts(root)
         print(f"rendered {len(pages)} page(s) under {root / 'wiki'}")
+        if args.backend in {"bge-m3", "modelscope"}:
+            wiki_indexes = build_wiki_vector_indexes(root, build_embedder(args.backend))
+            from server.config import agent_policy_snapshot, generation_snapshot
+
+            from onebookwiki.providers import GenerationConfig
+
+            snapshot = generation_snapshot(
+                args.provider,
+                args.model or GenerationConfig.from_env(args.provider).model,
+                args.max_output_tokens,
+                agent_policy_snapshot(args.backend),
+            )
+            (root / ".onebookwiki" / "generation-config.json").write_text(
+                __import__("json").dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            summary = ", ".join(
+                f"{item.layer}: {item.documents} documents/{item.chunks} chunks"
+                for item in wiki_indexes
+            )
+            print(f"built rendered-wiki vector layers: {summary}")
+        else:
+            print("skipping rendered-wiki vector layers because lexical backend has no semantic embedder")
         if not args.skip_check:
             build_progress("running final consistency check")
             status = check_book(["check_book.py", str(root), "--json"])

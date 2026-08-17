@@ -886,10 +886,10 @@ def synthesize_book(root: Path, options: GenerationOptions | None = None) -> Che
 
 def write_generation_snapshot(root: Path, options: GenerationOptions) -> None:
     """Persist the non-secret LLM profile required by durable Web chat."""
-    from server.config import generation_snapshot
+    from server.config import agent_policy_snapshot, generation_snapshot
 
     model = options.model or GenerationConfig.from_env(options.provider).model
-    snapshot = generation_snapshot(options.provider, model, options.max_output_tokens)
+    snapshot = generation_snapshot(options.provider, model, options.max_output_tokens, agent_policy_snapshot())
     target = root / ".onebookwiki" / "generation-config.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

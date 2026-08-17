@@ -141,8 +141,20 @@ def run_pipeline(
             db_update_phase(conn, book_id, "rendering")
 
             from onebookwiki.rendering import render_artifacts
+            from onebookwiki.providers import build_embedder
+            from onebookwiki.wiki_vector_index import build_wiki_vector_indexes
 
             render_artifacts(book_dir)
+            wiki_indexes = build_wiki_vector_indexes(book_dir, build_embedder(backend))
+            snapshot = generation_snapshot(
+                gen_config.provider,
+                gen_config.model,
+                gen_config.max_output_tokens,
+                __import__("server.config", fromlist=["agent_policy_snapshot"]).agent_policy_snapshot(backend),
+            )
+            (book_dir / ".onebookwiki" / "generation-config.json").write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
 
             # Update from structure.json
             structure_json = book_dir / "wiki" / "structure.json"
@@ -156,9 +168,13 @@ def run_pipeline(
                     page_count = len(data.get("pages", []))
                 except Exception:
                     pass
+            index_summary = ", ".join(
+                f"{item.layer}: {item.documents} documents/{item.chunks} chunks"
+                for item in wiki_indexes
+            )
             insert_operation_log(
                 conn, book_id, "render", "success", "rendering",
-                detail=f"Rendered {page_count} wiki pages",
+                detail=f"Rendered {page_count} wiki pages; built wiki vectors ({index_summary})",
             )
 
             # ---- Done ----

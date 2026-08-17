@@ -5,15 +5,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from onebookwiki.chat_agent import AgentTraceEvent
 from server.database import (
+    append_chat_agent_step,
     append_chat_turn,
     claim_chat_job,
     complete_chat_turn,
     create_chat_conversation,
     create_placeholder,
     delete_book,
+    get_chat_agent_trace,
     get_chat_conversation,
     init_db,
+    renew_chat_lease,
     reset_stuck_chat_jobs,
 )
 
@@ -107,6 +111,36 @@ class ChatPersistenceTest(unittest.TestCase):
         self.assertEqual(reset_stuck_chat_jobs(self.conn), 1)
         status = self.conn.execute("SELECT status FROM chat_turns WHERE id = ?", (turn_id,)).fetchone()
         self.assertEqual(status[0], "queued")
+
+    def test_lease_renewal_requires_an_unexpired_owner(self):
+        _, turn_id = self.create_conversation()
+        claim_chat_job(self.conn, "worker-a", 60)
+        self.assertTrue(renew_chat_lease(self.conn, turn_id, "worker-a", 60))
+        self.conn.execute("UPDATE chat_jobs SET lease_until = '2000-01-01T00:00:00Z' WHERE turn_id = ?", (turn_id,))
+        self.conn.commit()
+        self.assertFalse(renew_chat_lease(self.conn, turn_id, "worker-a", 60))
+        self.assertFalse(complete_chat_turn(
+            self.conn, turn_id, status="failed", error_code="expired", claimed_by="worker-a"
+        ))
+
+    def test_agent_trace_is_attempt_scoped_and_requires_ownership(self):
+        _, turn_id = self.create_conversation()
+        job = claim_chat_job(self.conn, "worker-a", 60)
+        event = AgentTraceEvent(
+            step_no=1, phase="retrieving", action="book_overview",
+            request={"arguments": {}}, result={"title": "Test"}, prompt_hash="abc",
+            usage={"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+        )
+        self.assertTrue(append_chat_agent_step(
+            self.conn, turn_id, int(job["attempt"]), event, claimed_by="worker-a"
+        ))
+        trace = get_chat_agent_trace(self.conn, turn_id)
+        self.assertEqual(len(trace), 1)
+        self.assertEqual(trace[0]["action"], "book_overview")
+        self.assertEqual(trace[0]["request"], {"arguments": {}})
+        self.assertFalse(append_chat_agent_step(
+            self.conn, turn_id, int(job["attempt"]), event, claimed_by="worker-b"
+        ))
 
     def test_book_delete_cascades_conversations_turns_and_jobs(self):
         conversation_id, turn_id = self.create_conversation()

@@ -91,6 +91,14 @@ def list_chat_turns(
     return JSONResponse({"turns": turns, "total": total, "limit": bounded_limit, "offset": bounded_offset})
 
 
+@router.get("/chat-turns/{turn_id}/agent-trace")
+def chat_agent_trace(turn_id: str, request: Request):
+    """Return bounded Agent action metadata for an authorized audit."""
+    from server.database import get_chat_agent_trace
+
+    return JSONResponse({"turnId": turn_id, "steps": get_chat_agent_trace(_db(request), turn_id)})
+
+
 # ── Book Metadata Update ──────────────────────────────────────────────────────
 
 

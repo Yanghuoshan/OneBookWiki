@@ -11,10 +11,9 @@ from .citations import validate_evidence
 from .models import EvidenceRef
 from .providers import ProviderUnavailable, build_embedder
 from .remote_index import CloudVectorIndex
-from .retrieval import HybridRetriever, LexicalRetriever, Result, rerank_results, vector_results
+from .retrieval import HybridRetriever, LexicalRetriever, Result, rerank_results, search_project, vector_results
 from .index import LocalIndex
 from .wiki_retrieval import assemble_wiki_first_context, build_wiki_first_prompt, render_context_blocks, search_artifacts, search_wiki
-from .cli.chat_book import raw_results
 
 
 class ChatRetrievalError(RuntimeError):
@@ -26,21 +25,35 @@ class ChatRetrievalError(RuntimeError):
 _EVIDENCE_ID_RE = re.compile(r"\bC(\d+)E(\d+)\b")
 
 
-def _strict_raw_results(root: Path, question: str, *, top_k: int = 8, backend: str = "bge-m3", retrieval: str | None = None) -> list[Result]:
-    """Retrieve raw evidence without the CLI's permissive lexical fallback."""
-    mode = retrieval or ("vector" if backend in {"bge-m3", "modelscope"} else "lexical")
-    if mode == "lexical":
-        return raw_results(root, type("Args", (), {
-            "retrieval": "lexical", "backend": backend, "question": question,
-            "top_k": top_k, "chapter": None, "strict_hybrid": True,
-        })())
+def strict_raw_results(root: Path, question: str, *, top_k: int = 8, backend: str = "bge-m3", retrieval: str | None = None, chapters: Sequence[int] = ()) -> list[Result]:
+    """Search indexed raw evidence without a lexical-only fallback.
+
+    This is the Agent-only raw evidence entry point. Callers must use ``vector``
+    or ``hybrid``. The optional chapter filter keeps the selected source-unit
+    route bounded without weakening the raw provenance boundary.
+    """
+    mode = retrieval or "vector"
+    if mode not in {"vector", "hybrid"}:
+        raise ChatRetrievalError("retrieval_unavailable", "Agent raw evidence retrieval requires vector or hybrid mode.")
+    chapter_filter = sorted({int(item) for item in chapters})
     try:
         embedder = build_embedder(backend)
         vector_index = CloudVectorIndex(root, embedder)
         if mode == "vector":
+            if chapter_filter:
+                found = []
+                for chapter in chapter_filter:
+                    found.extend(vector_results(vector_index.search(question, top_k, chapter)))
+                return rerank_results(question, found, "local")[:top_k]
             return vector_results(vector_index.search(question, top_k))
         lexical = LexicalRetriever(LocalIndex(root).load())
         hybrid = HybridRetriever(lexical, lambda query, limit, chapter: vector_results(vector_index.search(query, limit, chapter)))
+        if chapter_filter:
+            found = []
+            per_chapter = max(1, (top_k + len(chapter_filter) - 1) // len(chapter_filter))
+            for chapter in chapter_filter:
+                found.extend(hybrid.search(question, per_chapter, chapter))
+            return rerank_results(question, found, "local")[:top_k]
         return hybrid.search(question, top_k)
     except ProviderUnavailable as exc:
         raise ChatRetrievalError("retrieval_unavailable", str(exc)) from exc
@@ -185,6 +198,24 @@ def _wiki_evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list
     return valid
 
 
+def _legacy_raw_results(
+    root: Path,
+    question: str,
+    *,
+    backend: str,
+    retrieval: str | None,
+) -> list[Result]:
+    """Preserve fixed-RAG CLI/test behavior while Agent retrieval stays strict.
+
+    The legacy path still supports explicitly selected lexical retrieval. It is
+    intentionally private so new web chat code cannot accidentally choose it.
+    """
+    mode = retrieval or ("vector" if backend in {"bge-m3", "modelscope"} else "lexical")
+    if mode == "lexical":
+        return search_project(root, question, top_k=8)
+    return strict_raw_results(root, question, backend=backend, retrieval=mode)
+
+
 def retrieve_chat_context(
     root: Path,
     question: str,
@@ -194,10 +225,14 @@ def retrieve_chat_context(
     retrieval: str | None = None,
     max_tokens: int = 8000,
 ) -> dict[str, Any]:
-    """Build a strict wiki-first prompt; raise before generation if raw evidence is invalid."""
+    """Build a legacy fixed-RAG prompt; new web chat uses ``AgenticChatRunner``."""
     wiki = search_wiki(root, question, 3)
     artifacts = search_artifacts(root, question, 2)
-    raw = rerank_results(question, _strict_raw_results(root, question, backend=backend, retrieval=retrieval), "local")
+    raw = rerank_results(
+        question,
+        _legacy_raw_results(root, question, backend=backend, retrieval=retrieval),
+        "local",
+    )
     context, selected = assemble_wiki_first_context(wiki, artifacts, raw, max_tokens, 3, 2, 3)
     raw_items = [item for item in selected if item.get("source_kind") == "raw"]
     raw_selected = _evidence_records(root, raw_items)
@@ -231,6 +266,33 @@ def retrieve_chat_context(
         "raw_evidence": combined_evidence,
         "allowed_evidence_ids": sorted(allowed),
     }
+
+
+def resolve_validated_evidence(root: Path, results: Sequence[Result | dict[str, Any]], *, limit: int = 6) -> list[dict[str, Any]]:
+    """Resolve strict raw results to deduplicated, source-validated CnEn records."""
+    chunks = [dict(item.chunk) if isinstance(item, Result) else dict(item) for item in results]
+    records = _evidence_records(root, chunks)
+    unique: dict[str, dict[str, Any]] = {}
+    for record in records:
+        unique.setdefault(str(record["evidence_id"]), record)
+    return list(unique.values())[: max(1, min(limit, 6))]
+
+
+def validate_final_answer(answer: str, allowed_evidence_ids: set[str]) -> list[str]:
+    """Require a valid allowed citation in each substantive answer paragraph."""
+    citations = validate_answer(answer, allowed_evidence_ids)
+    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", answer) if item.strip()]
+    for paragraph in paragraphs:
+        prose = re.sub(_EVIDENCE_ID_RE, "", paragraph).strip(" []()，,。;；")
+        if len(prose) < 20:
+            continue
+        paragraph_ids = extract_citation_ids(paragraph)
+        if not paragraph_ids:
+            raise ChatRetrievalError("answer_uncited_claim", "模型回答包含没有 evidence 引用的实质段落。")
+        unknown = paragraph_ids - allowed_evidence_ids
+        if unknown:
+            raise ChatRetrievalError("answer_unknown_citation", f"模型引用了本轮不可用的 evidence：{', '.join(sorted(unknown))}")
+    return citations
 
 
 def validate_answer(answer: str, allowed_evidence_ids: set[str]) -> list[str]:

@@ -184,6 +184,7 @@ class GenerationResponse:
     usage: dict[str, int] | None = None
     estimated_usage: bool = False
     request_id: str | None = None
+    finish_reason: str | None = None
 
 
 def build_grounded_prompt(question: str, context: str) -> str:
@@ -264,6 +265,7 @@ def generate_response(
             usage=usage,
             estimated_usage=estimated,
             request_id=getattr(response, "id", None),
+            finish_reason=getattr(response.choices[0], "finish_reason", None),
         )
     except ProviderUnavailable:
         raise
@@ -272,6 +274,27 @@ def generate_response(
         raise ProviderUnavailable(
             f"LLM generation request failed: {type(exc).__name__}: {detail}"
         ) from exc
+
+
+def generate_structured_response(
+    prompt: str,
+    provider: str = "none",
+    model: str | None = None,
+    max_output_tokens: int = 400,
+    system_prompt: str = "You are a bounded research-planning assistant. Return only one JSON object.",
+) -> GenerationResponse:
+    """Generate a small JSON decision through the existing compatible endpoint.
+
+    The application parses and validates this text locally. Keeping the call a
+    normal completion avoids relying on provider-specific native tool support.
+    """
+    return generate_response(
+        prompt,
+        provider=provider,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        system_prompt=system_prompt,
+    )
 
 
 def generate(
