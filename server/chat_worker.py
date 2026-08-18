@@ -14,7 +14,7 @@ from pathlib import Path
 from onebookwiki.book_navigation import BookCatalog
 from onebookwiki.chat_agent import AgentPolicy, AgentRunError, AgentTraceEvent, AgenticChatRunner
 from onebookwiki.chat_retrieval import ChatRetrievalError
-from onebookwiki.ledger import append_usage
+from onebookwiki.ledger import append_chat_model_call_audit, append_usage
 from onebookwiki.providers import GenerationConfig, ProviderUnavailable, build_embedder
 from onebookwiki.wiki_vector_index import WikiVectorIndex
 from server.config import ChatSettings, books_root, db_path
@@ -117,6 +117,14 @@ def process_job(
                 heartbeat.mark_lost()
 
         def record_usage(stage: str, prompt: str, response) -> None:
+            append_chat_model_call_audit(
+                book_root,
+                turn_id=turn_id,
+                attempt=attempt,
+                stage=stage,
+                prompt=prompt,
+                response=response,
+            )
             append_usage(
                 book_root,
                 run_id=f"chat:{job['conversation_id']}",

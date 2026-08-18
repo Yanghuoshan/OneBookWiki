@@ -1,4 +1,4 @@
-"""Append-only token usage and cost accounting for generation runs."""
+"""Append-only usage accounting and chat model-call auditing."""
 from __future__ import annotations
 
 import hashlib
@@ -24,6 +24,57 @@ def _get_usage_lock(target: Path) -> threading.Lock:
         if target not in _usage_file_locks:
             _usage_file_locks[target] = threading.Lock()
         return _usage_file_locks[target]
+
+
+def append_chat_model_call_audit(
+    root: Path,
+    *,
+    turn_id: str,
+    attempt: int,
+    stage: str,
+    prompt: str,
+    response: Any,
+) -> dict[str, Any]:
+    """Persist complete planner/finalizer input and output for one chat turn."""
+    target = root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_usage_lock(target)
+    with lock:
+        document: dict[str, Any]
+        if target.is_file():
+            value = json.loads(target.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError(f"chat audit is not a JSON object: {target}")
+            document = value
+        else:
+            document = {}
+        calls = document.get("calls")
+        if not isinstance(calls, list):
+            calls = []
+        record = {
+            "sequence": len(calls) + 1,
+            "attempt": int(attempt),
+            "stage": str(stage),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "model": getattr(response, "model", None),
+            "request_id": getattr(response, "request_id", None),
+            "finish_reason": getattr(response, "finish_reason", None),
+            "usage": getattr(response, "usage", None) or {},
+            "estimated_usage": bool(getattr(response, "estimated_usage", False)),
+            "prompt_hash": prompt_hash(prompt) if prompt else "",
+            "prompt": prompt,
+            "output": str(getattr(response, "text", "") or ""),
+        }
+        calls.append(record)
+        document = {
+            "schema_version": 1,
+            "turn_id": turn_id,
+            "calls": calls,
+        }
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+        return record
 
 
 def _rate(value: float | None, env_name: str) -> float | None:

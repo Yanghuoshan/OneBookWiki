@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from onebookwiki.chat_agent import AgentPolicy, AgentResult, AgentTraceEvent
 from onebookwiki.chat_retrieval import ChatRetrievalError
+from onebookwiki.ledger import append_chat_model_call_audit
 from onebookwiki.providers import GenerationConfig, GenerationResponse
 from server.chat_worker import process_job
 from server.config import ChatSettings, generation_snapshot
@@ -153,6 +154,34 @@ class ChatWorkerTest(unittest.TestCase):
         entries = [json.loads(line) for line in usage_path.read_text(encoding="utf-8").splitlines()]
         self.assertEqual([item["stage"] for item in entries], ["chat_plan", "chat_final"])
         self.assertEqual([item["node_id"] for item in entries], [f"{turn_id}:chat_plan", f"{turn_id}:chat_final"])
+
+        audit_path = self.book_root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json"
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        self.assertEqual(audit["schema_version"], 1)
+        self.assertEqual(audit["turn_id"], turn_id)
+        self.assertEqual([item["stage"] for item in audit["calls"]], ["chat_plan", "chat_final"])
+        self.assertEqual([item["prompt"] for item in audit["calls"]], ["planner prompt", "final prompt"])
+        self.assertEqual([item["output"] for item in audit["calls"]], ['{"type":"action"}', "Supported answer. C1E1"])
+        self.assertEqual([item["request_id"] for item in audit["calls"]], [None, "request-1"])
+        self.assertEqual([item["usage"]["total_tokens"] for item in audit["calls"]], [3, 6])
+        self.assertTrue(all(item["prompt_hash"] for item in audit["calls"]))
+
+    def test_chat_audit_appends_calls_across_attempts(self):
+        turn_id, _ = self.create_job()
+        first = GenerationResponse(text="first", model="test-model", request_id="request-1")
+        second = GenerationResponse(text="second", model="test-model", request_id="request-2")
+        append_chat_model_call_audit(
+            self.book_root, turn_id=turn_id, attempt=1, stage="chat_final", prompt="prompt 1", response=first
+        )
+        append_chat_model_call_audit(
+            self.book_root, turn_id=turn_id, attempt=2, stage="chat_final", prompt="prompt 2", response=second
+        )
+
+        audit_path = self.book_root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json"
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        self.assertEqual([item["sequence"] for item in audit["calls"]], [1, 2])
+        self.assertEqual([item["attempt"] for item in audit["calls"]], [1, 2])
+        self.assertEqual([item["output"] for item in audit["calls"]], ["first", "second"])
 
     def test_controlled_retrieval_failure_becomes_refused_turn(self):
         turn_id, job = self.create_job()
