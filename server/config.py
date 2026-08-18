@@ -74,6 +74,9 @@ def agent_policy_snapshot(embedding_backend: str | None = None) -> dict[str, obj
         "embedding_backend": embedding_backend or os.getenv(
             "ONEBOOKWIKI_CHAT_EMBEDDING_BACKEND", AgentPolicy.embedding_backend
         ),
+        "final_answer_repairs": os.getenv(
+            "ONEBOOKWIKI_CHAT_FINAL_ANSWER_REPAIRS", AgentPolicy.final_answer_repairs
+        ),
     }
     return AgentPolicy.from_dict(values).to_dict()
 

@@ -25,6 +25,14 @@ class ChatRetrievalError(RuntimeError):
 _EVIDENCE_ID_RE = re.compile(r"\bC(\d+)E(\d+)\b")
 
 
+def _canonical_evidence_id(value: object, key: object = "") -> str:
+    """Accept only a rendered evidence record's canonical CnEn identity."""
+    evidence_id = str(value or "")
+    if not _EVIDENCE_ID_RE.fullmatch(evidence_id) or evidence_id != str(key or evidence_id):
+        return ""
+    return evidence_id
+
+
 def strict_raw_results(root: Path, question: str, *, top_k: int = 8, backend: str = "bge-m3", retrieval: str | None = None, chapters: Sequence[int] = ()) -> list[Result]:
     """Search indexed raw evidence without a lexical-only fallback.
 
@@ -118,15 +126,18 @@ def _evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list[dict
         chapter = int(chunk.get("chapter", 0) or 0)
         chunk_id = str(chunk.get("chunk_id", ""))
         matches = [
-            value for value in rendered.values()
+            (key, value) for key, value in rendered.items()
             if isinstance(value, dict) and str(value.get("chunk_id", "")) == chunk_id
             and int(value.get("chapter", 0) or 0) == chapter
         ]
         if not matches:
             continue
-        value = matches[0]
+        evidence_key, value = matches[0]
+        evidence_id = _canonical_evidence_id(value.get("evidence_id"), evidence_key)
+        if not evidence_id:
+            continue
         ref = EvidenceRef(
-            evidence_id=str(value.get("evidence_id", "")), chunk_id=chunk_id,
+            evidence_id=evidence_id, chunk_id=chunk_id,
             source_path=str(value.get("source_path", "")), chapter=chapter,
             start_line=int(value.get("start_line", 0) or 0), end_line=int(value.get("end_line", 0) or 0),
             quote=str(value.get("quote", "")), locator=dict(value.get("locator") or {}),
@@ -141,6 +152,8 @@ def _evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list[dict
             "start_line": ref.start_line,
             "end_line": ref.end_line,
             "quote": ref.quote,
+            "locator": ref.locator,
+            "display_label": str(value.get("display_label", "")),
             "text": str(chunk.get("text", "")),
         })
     return valid
@@ -173,8 +186,11 @@ def _wiki_evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list
         value = rendered.get(evidence_id)
         if not isinstance(value, dict):
             continue
+        canonical_id = _canonical_evidence_id(value.get("evidence_id"), evidence_id)
+        if not canonical_id:
+            continue
         ref = EvidenceRef(
-            evidence_id=str(value.get("evidence_id", evidence_id)),
+            evidence_id=canonical_id,
             chunk_id=str(value.get("chunk_id", "")),
             source_path=str(value.get("source_path", "")),
             chapter=int(value.get("chapter", 0) or 0),
@@ -193,6 +209,8 @@ def _wiki_evidence_records(root: Path, chunks: Sequence[dict[str, Any]]) -> list
             "start_line": ref.start_line,
             "end_line": ref.end_line,
             "quote": ref.quote,
+            "locator": ref.locator,
+            "display_label": str(value.get("display_label", "")),
             "text": "",
         })
     return valid

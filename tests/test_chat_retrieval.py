@@ -84,6 +84,31 @@ class ChatRetrievalTest(unittest.TestCase):
         with self.assertRaisesRegex(ChatRetrievalError, "不可用"):
             validate_answer("Wrong citation C2E3", {"C1E1"})
 
+    def test_epub_locator_is_display_metadata_not_a_citation_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunk = self.make_book(root)
+            evidence_path = root / "wiki" / "evidence.json"
+            payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            payload["evidence"]["C1E1"]["display_label"] = "EPUB Ch. 1 · Spine 2 · index_split_000.html"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            records = _evidence_records(root, [chunk])
+            self.assertEqual([item["evidence_id"] for item in records], ["C1E1"])
+            with self.assertRaises(ChatRetrievalError) as raised:
+                validate_answer("Answer EPUB Ch. 1 · Spine 2 · index_split_000.html", {"C1E1"})
+            self.assertEqual(raised.exception.code, "answer_missing_citation")
+
+    def test_evidence_key_and_embedded_id_must_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            chunk = self.make_book(root)
+            evidence_path = root / "wiki" / "evidence.json"
+            payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            value = payload["evidence"]["C1E1"]
+            value["evidence_id"] = "C1E2"
+            evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertEqual(_evidence_records(root, [chunk]), [])
+
     def test_wiki_evidence_records_resolve_inline_citations(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

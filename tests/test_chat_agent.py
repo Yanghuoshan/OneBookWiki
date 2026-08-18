@@ -13,6 +13,7 @@ from onebookwiki.chat_agent import (
     build_final_evidence_prompt,
     parse_agent_decision,
 )
+from onebookwiki.chat_retrieval import ChatRetrievalError
 from onebookwiki.providers import GenerationResponse
 
 
@@ -68,10 +69,85 @@ class ChatAgentTest(unittest.TestCase):
             {"evidence_id": "C1E1", "source_path": "raw/1.md", "start_line": 1, "end_line": 1, "text": "short evidence"},
             {"evidence_id": "C2E1", "source_path": "raw/2.md", "start_line": 1, "end_line": 1, "text": "more evidence"},
         ]
-        prompt, included = build_final_evidence_prompt("Question", evidence, 30)
+        prompt, included = build_final_evidence_prompt("Question", evidence, 50)
         self.assertEqual([item["evidence_id"] for item in included], ["C1E1"])
-        self.assertIn("C1E1", prompt)
+        self.assertIn("EVIDENCE_ID: C1E1", prompt)
+        self.assertIn("SOURCE_LOCATOR: (not available)", prompt)
+        self.assertIn("SOURCE_LOCATOR", prompt)
+        self.assertIn("must never be used as citations", prompt)
         self.assertNotIn("C2E1", prompt)
+
+    def test_policy_clamps_final_answer_repairs(self):
+        self.assertEqual(AgentPolicy.from_dict({"final_answer_repairs": 9}).final_answer_repairs, 1)
+        self.assertEqual(AgentPolicy.from_dict({"final_answer_repairs": -1}).final_answer_repairs, 0)
+
+    def test_locator_only_final_answer_is_repaired_to_canonical_id(self):
+        decisions = iter([
+            {"type": "action", "action": "book_overview", "arguments": {}},
+            {"type": "action", "action": "search_chapter_interpretations", "arguments": {"query": "愚人船"}},
+            {"type": "action", "action": "open_source_unit", "arguments": {"source_unit_id": "unit-1"}},
+            {"type": "action", "action": "search_raw_evidence", "arguments": {"query": "愚人船", "source_unit_ids": ["unit-1"]}},
+            {"type": "final"},
+        ])
+        final_prompts = []
+        final_calls = iter([
+            "愚人船是一个历史意象。EPUB Ch. 5 · Spine 6 · index_split_004.html",
+            "愚人船是一个连接驱逐、边界空间与文化不安的历史意象。C5E1",
+        ])
+
+        def planner(_):
+            return self.response(next(decisions))
+
+        def finalizer(prompt):
+            final_prompts.append(prompt)
+            return GenerationResponse(
+                text=next(final_calls), model="test", request_id=f"request-{len(final_prompts)}",
+                usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            )
+
+        evidence = [{
+            "evidence_id": "C5E1", "source_path": "raw/chapters/05-part-1.md", "chapter": 5,
+            "start_line": 1, "end_line": 2, "display_label": "EPUB Ch. 5 · Spine 6 · index_split_004.html",
+            "text": "愚人船连接驱逐、边界空间与文化不安。",
+        }]
+        runner = AgenticChatRunner(
+            FakeCatalog(), provider="test", model="test", max_output_tokens=200,
+            policy=AgentPolicy(max_actions=5, final_evidence_tokens=120, final_answer_repairs=1),
+            planner=planner, finalizer=finalizer,
+        )
+        model_calls = []
+        runner.on_model_call = lambda stage, prompt, response: model_calls.append(stage)
+        with patch("onebookwiki.chat_agent.strict_raw_results", return_value=[object()]), patch(
+            "onebookwiki.chat_agent.resolve_validated_evidence", return_value=evidence
+        ):
+            result = runner.run("请问愚人船是什么")
+        self.assertEqual(result.citations, ["C5E1"])
+        self.assertEqual(result.answer, "愚人船是一个连接驱逐、边界空间与文化不安的历史意象。C5E1")
+        self.assertEqual(model_calls, ["chat_plan", "chat_plan", "chat_plan", "chat_plan", "chat_plan", "chat_final", "chat_final_repair"])
+        self.assertIn("EVIDENCE_ID: C5E1", final_prompts[1])
+        self.assertIn("BEGIN INVALID DRAFT", final_prompts[1])
+        self.assertEqual(result.final_prompt, final_prompts[1])
+
+    def test_final_answer_repair_does_not_map_unknown_or_locator_output(self):
+        decisions = iter([
+            {"type": "action", "action": "book_overview", "arguments": {}},
+            {"type": "action", "action": "search_chapter_interpretations", "arguments": {"query": "q"}},
+            {"type": "action", "action": "open_source_unit", "arguments": {"source_unit_id": "unit-1"}},
+            {"type": "action", "action": "search_raw_evidence", "arguments": {"query": "q", "source_unit_ids": ["unit-1"]}},
+            {"type": "final"},
+        ])
+        final_calls = iter(["locator only EPUB Ch. 5 · Spine 6", "still locator only EPUB Ch. 5 · Spine 6"])
+        runner = AgenticChatRunner(
+            FakeCatalog(), provider="test", model="test", max_output_tokens=200,
+            policy=AgentPolicy(max_actions=5, final_evidence_tokens=120, final_answer_repairs=1),
+            planner=lambda _: self.response(next(decisions)),
+            finalizer=lambda _: GenerationResponse(text=next(final_calls), model="test"),
+        )
+        evidence = [{"evidence_id": "C5E1", "source_path": "raw/chapters/05.md", "text": "Valid evidence."}]
+        with patch("onebookwiki.chat_agent.strict_raw_results", return_value=[object()]), patch(
+            "onebookwiki.chat_agent.resolve_validated_evidence", return_value=evidence
+        ), self.assertRaisesRegex(ChatRetrievalError, "evidence"):
+            runner.run("q")
 
     def test_hierarchical_flow_is_evidence_only_at_final_synthesis(self):
         decisions = iter([
