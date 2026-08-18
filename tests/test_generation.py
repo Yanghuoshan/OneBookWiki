@@ -4,8 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from onebookwiki.checkpoints import CheckpointStore
 from onebookwiki.chunking import chunk_text
-from onebookwiki.generation import GenerationError, GenerationOptions, _parse_json_response, generate_chapters, synthesize_book
+from onebookwiki.generation import GenerationError, GenerationOptions, _parse_json_response, _response, generate_chapters, synthesize_book
 from onebookwiki.index import LocalIndex
 from onebookwiki.providers import GenerationResponse
 
@@ -16,7 +17,16 @@ class GenerationTest(unittest.TestCase):
             "purpose": "Explain attention.",
             "executive_summary": "Attention organizes inquiry.",
             "core_thesis": "Questions direct attention.",
-            "claims": [{"text": "Questions direct attention.", "evidence_ids": ["C1E1"]}],
+            "argument_map": "Questions direct attention through inquiry.",
+            "key_concepts": ["attention"],
+            "observations": [{"text": "The source frames attention as directed inquiry.", "evidence_ids": ["C1E1"]}],
+            "quotations": [{"text": "Questions direct attention.", "evidence_ids": ["C1E1"]}],
+            "relation_to_previous": "材料不足",
+            "relation_to_following": "材料不足",
+            "cross_chapter_connections": [],
+            "open_questions": [],
+            "review_questions": [],
+            "claims": [{"text": "Questions direct attention.", "evidence_ids": ["C1E1"], "confidence": "high"}],
         }
 
     def make_index(self, root: Path, chapters: int = 1) -> None:
@@ -112,38 +122,72 @@ class GenerationTest(unittest.TestCase):
             chapter_responses = []
             for number in range(1, 5):
                 chapter_value = dict(self.valid)
-                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"]}]
+                for field in ("observations", "quotations", "cross_chapter_connections"):
+                    chapter_value[field] = [dict(item, evidence_ids=[f"C{number}E1"]) for item in chapter_value[field]]
+                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"], "confidence": "high"}]
                 chapter_responses.append(GenerationResponse(text=json.dumps(chapter_value), model="test"))
             with patch("onebookwiki.generation.generate_response", side_effect=chapter_responses):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
-            rollup = {"summary": "Combined", "themes": [{"text": "Fourth chapter theme", "evidence_ids": ["C4E1"]}]}
-            book = {"overview": "Overview"}
+            rollup = {
+                "summary": "Combined",
+                "themes": [{"text": "Fourth chapter theme", "evidence_ids": ["C4E1"]}],
+                "concepts": [],
+                "arguments": [],
+                "tensions": [],
+            }
+            book = {
+                "overview": "Overview",
+                "core_thesis": "The book develops a connected inquiry.",
+                "argument_chain": "The chapters build the argument.",
+                "themes": [], "concepts": [], "arguments": [],
+                "terminology": [], "unresolved_questions": [],
+                "chapter_summaries": {str(number): f"Chapter {number} summary." for number in range(1, 5)},
+            }
             with patch("onebookwiki.generation.generate_response", side_effect=[GenerationResponse(text=json.dumps(rollup), model="test"), GenerationResponse(text=json.dumps(book), model="test")]):
                 store = synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
             self.assertEqual(store.data["nodes"]["rollup:1-4"]["status"], "completed")
             self.assertTrue((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").is_file())
 
-    def test_rollup_strips_evidence_outside_its_group(self):
+    def test_rollup_rejects_evidence_outside_its_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_index(root, chapters=4)
             chapter_responses = []
             for number in range(1, 5):
                 chapter_value = dict(self.valid)
-                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"]}]
+                for field in ("observations", "quotations", "cross_chapter_connections"):
+                    chapter_value[field] = [dict(item, evidence_ids=[f"C{number}E1"]) for item in chapter_value[field]]
+                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"], "confidence": "high"}]
                 chapter_responses.append(GenerationResponse(text=json.dumps(chapter_value), model="test"))
             with patch("onebookwiki.generation.generate_response", side_effect=chapter_responses):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
-            # Evidence IDs outside the rollup group are silently stripped rather
-            # than failing the entire rollup (rollup synthesis works from summaries).
-            invalid = {"summary": "Combined", "themes": [{"text": "Unknown chapter", "evidence_ids": ["C5E1"]}]}
-            book = {"overview": "Overview"}
-            with patch("onebookwiki.generation.generate_response", side_effect=[GenerationResponse(text=json.dumps(invalid), model="test"), GenerationResponse(text=json.dumps(book), model="test")]):
-                store = synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
-            self.assertEqual(store.data["nodes"]["rollup:1-4"]["status"], "completed")
-            artifact = json.loads((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").read_text(encoding="utf-8"))
-            # C5E1 should have been stripped from the persisted artifact
-            self.assertEqual(artifact["themes"][0]["evidence_ids"], [])
+            invalid = {
+                "summary": "Combined",
+                "themes": [{"text": "Unknown chapter", "evidence_ids": ["C5E1"]}],
+                "concepts": [], "arguments": [], "tensions": [],
+            }
+            with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=json.dumps(invalid), model="test")):
+                with self.assertRaisesRegex(GenerationError, "unavailable evidence ID"):
+                    synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
+            checkpoint = json.loads((root / ".onebookwiki" / "checkpoints" / f"run-{store.run_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["nodes"]["rollup:1-4"]["status"], "failed")
+            self.assertFalse((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").is_file())
+
+    def test_usage_accounting_failure_does_not_replay_successful_provider_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = CheckpointStore(root, run_id="accounting")
+            response = GenerationResponse(text=json.dumps(self.valid), model="test")
+            with patch("onebookwiki.generation.generate_response", return_value=response) as provider, patch(
+                "onebookwiki.generation.append_usage", side_effect=OSError("disk full")
+            ):
+                with self.assertRaisesRegex(GenerationError, "usage accounting failed"):
+                    _response(root, "prompt", GenerationOptions(provider="test", retries=2), store, "chapter:1", "chapter")
+            provider.assert_called_once()
+            node = store.data["nodes"]["chapter:1"]
+            self.assertEqual(node["status"], "failed")
+            self.assertEqual(node["failure_kind"], "accounting")
+            self.assertTrue(node["provider_response_received"])
 
     def test_unrecoverable_response_marks_checkpoint_failed(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -4,7 +4,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from onebookwiki.providers import LocalBgeM3Config, LocalBgeM3Embedder, ProviderUnavailable, build_grounded_prompt, generate
+from onebookwiki.providers import (
+    LocalBgeM3Config,
+    LocalBgeM3Embedder,
+    ProviderUnavailable,
+    build_grounded_prompt,
+    generate,
+    generate_response,
+)
 
 
 class FakeCompletions:
@@ -44,6 +51,54 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(call["model"], "test-model")
         self.assertEqual(call["max_tokens"], 37)
         self.assertNotIn("test-key", repr(call))
+
+    def test_provider_accepts_dict_response_and_usage(self):
+        class DictCompletions:
+            def create(self, **kwargs):
+                return {
+                    "id": "request-1",
+                    "model": "dict-model",
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+                    "choices": [{"finish_reason": "stop", "message": {"content": "Dict answer"}}],
+                }
+
+        class DictOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=DictCompletions())
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True), patch(
+            "openai.OpenAI", DictOpenAI
+        ):
+            response = generate_response("prompt", provider="openai-compatible", model="test-model")
+        self.assertEqual(response.text, "Dict answer")
+        self.assertEqual(response.model, "dict-model")
+        self.assertEqual(response.request_id, "request-1")
+        self.assertEqual(response.finish_reason, "stop")
+        self.assertEqual(response.usage, {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8})
+        self.assertFalse(response.estimated_usage)
+
+    def test_provider_rejects_missing_choices_message_and_non_text_content(self):
+        responses = [
+            {},
+            {"choices": [{}]},
+            {"choices": [{"message": {"content": ["not text"]}}]},
+        ]
+        expected = ["no choices", "without a message", "empty or non-text"]
+
+        class InvalidCompletions:
+            def create(self, **kwargs):
+                return responses.pop(0)
+
+        class InvalidOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=InvalidCompletions())
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True), patch(
+            "openai.OpenAI", InvalidOpenAI
+        ):
+            for detail in expected:
+                with self.subTest(detail=detail), self.assertRaisesRegex(ProviderUnavailable, detail):
+                    generate_response("prompt", provider="openai-compatible", model="test-model")
 
     def test_none_provider_remains_retrieval_only(self):
         with self.assertRaises(ProviderUnavailable):

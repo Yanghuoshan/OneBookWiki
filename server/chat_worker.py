@@ -14,10 +14,10 @@ from pathlib import Path
 from onebookwiki.book_navigation import BookCatalog
 from onebookwiki.chat_agent import AgentPolicy, AgentRunError, AgentTraceEvent, AgenticChatRunner
 from onebookwiki.chat_retrieval import ChatRetrievalError
-from onebookwiki.ledger import append_chat_model_call_audit, append_usage
+from onebookwiki.ledger import append_chat_audit_event, append_chat_model_call_audit, append_usage
 from onebookwiki.providers import GenerationConfig, ProviderUnavailable, build_embedder
 from onebookwiki.wiki_vector_index import WikiVectorIndex
-from server.config import ChatSettings, books_root, db_path
+from server.config import ChatSettings, books_root, db_path, verify_generation_snapshot
 from server.database import (
     append_chat_agent_step,
     chat_job_owned,
@@ -78,11 +78,69 @@ class _LeaseHeartbeat:
             self._thread.join(timeout=self.settings.lease_heartbeat_seconds + 1)
 
 
+_EVIDENCE_REFUSAL_CODES = {"raw_evidence_missing"}
+
+
 def _snapshot_policy(snapshot: dict[str, object]) -> AgentPolicy:
     try:
         return AgentPolicy.from_dict(snapshot.get("agent_policy") if isinstance(snapshot.get("agent_policy"), dict) else None)
     except (TypeError, ValueError) as exc:
-        raise AgentRunError("retrieval_unavailable", "聊天 Agent 配置无效。") from exc
+        raise AgentRunError("generation_config_invalid", "聊天 Agent 配置无效。") from exc
+
+
+def _terminal_error(exc: BaseException) -> tuple[str, str, str | None]:
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, ProviderUnavailable):
+            return "failed", "provider_unavailable", str(cause)
+        cause = cause.__cause__
+    if isinstance(exc, AgentRunError):
+        if exc.code in _EVIDENCE_REFUSAL_CODES:
+            return "refused", exc.code, None
+        return "failed", exc.code, str(exc)
+    if isinstance(exc, ChatRetrievalError):
+        if exc.code in _EVIDENCE_REFUSAL_CODES:
+            return "refused", exc.code, None
+        return "failed", exc.code, str(exc)
+    return "failed", "operational_error", f"{type(exc).__name__}: {str(exc)[:900]}"
+
+
+def _record_terminal(
+    conn: sqlite3.Connection,
+    book_root: Path,
+    turn_id: str,
+    attempt: int,
+    worker_id: str,
+    heartbeat: _LeaseHeartbeat,
+    *,
+    status: str,
+    audit_payload: dict[str, object],
+    error_payload: dict[str, object] | None = None,
+    **kwargs: object,
+) -> bool:
+    """Persist the terminal row, then audit only a successful ownership write."""
+    if not heartbeat.active():
+        return False
+    written = complete_chat_turn(conn, turn_id, status=status, claimed_by=worker_id, **kwargs)
+    if not written:
+        heartbeat.mark_lost()
+        return False
+    if error_payload is not None:
+        append_chat_audit_event(
+            book_root,
+            turn_id=turn_id,
+            attempt=attempt,
+            event_type="error",
+            payload=error_payload,
+        )
+    append_chat_audit_event(
+        book_root,
+        turn_id=turn_id,
+        attempt=attempt,
+        event_type="terminal",
+        payload={"status": status, **audit_payload},
+    )
+    return True
 
 
 def process_job(
@@ -95,26 +153,61 @@ def process_job(
 ) -> None:
     turn_id = str(job["id"])
     book_root = root / str(job["book_id"])
+    attempt = int(job.get("attempt", 1))
     heartbeat = _LeaseHeartbeat(database or db_path(), turn_id, worker_id, settings)
     heartbeat.start()
     try:
-        snapshot = json.loads(str(job["generation_config_json"]))
+        try:
+            raw_snapshot = json.loads(str(job["generation_config_json"]))
+            if not isinstance(raw_snapshot, dict):
+                raise ValueError("generation snapshot must be an object")
+            snapshot = verify_generation_snapshot(
+                raw_snapshot,
+                expected_hash=str(job.get("generation_config_hash") or ""),
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise AgentRunError("generation_config_invalid", "生成配置快照无效。") from exc
+
         current = GenerationConfig.from_env()
+        try:
+            snapshot_max_tokens = int(snapshot["max_output_tokens"])
+        except (TypeError, ValueError) as exc:
+            raise AgentRunError("generation_config_invalid", "生成配置快照无效。") from exc
         if (
-            snapshot.get("provider") != current.provider
-            or snapshot.get("model") != current.model
-            or int(snapshot.get("max_output_tokens", 0)) != current.max_output_tokens
+            snapshot["provider"] != current.provider
+            or snapshot["model"] != current.model
+            or snapshot_max_tokens != current.max_output_tokens
+            or str(job.get("generation_provider")) != str(snapshot["provider"])
+            or str(job.get("generation_model")) != str(snapshot["model"])
+            or int(job.get("generation_max_tokens", 0)) != snapshot_max_tokens
         ):
             raise AgentRunError("generation_config_mismatch", "当前服务配置与生成该书时的配置不一致。")
         policy = _snapshot_policy(snapshot)
         embedder = build_embedder(policy.embedding_backend)
         catalog = BookCatalog(book_root, WikiVectorIndex(book_root, embedder))
         history = _history(conn, str(job["conversation_id"]))
-        attempt = int(job.get("attempt", 1))
 
         def record_trace(event: AgentTraceEvent) -> None:
             if not append_chat_agent_step(conn, turn_id, attempt, event, claimed_by=worker_id):
                 heartbeat.mark_lost()
+                return
+            append_chat_audit_event(
+                book_root,
+                turn_id=turn_id,
+                attempt=attempt,
+                event_type="action",
+                payload={
+                    "step_no": event.step_no,
+                    "phase": event.phase,
+                    "action": event.action,
+                    "status": event.status,
+                    "error_code": event.error_code,
+                    "prompt_hash": event.prompt_hash,
+                    "provider_request_id": event.provider_request_id,
+                    "usage": event.usage or {},
+                    "result": event.result,
+                },
+            )
 
         def record_usage(stage: str, prompt: str, response) -> None:
             append_chat_model_call_audit(
@@ -142,7 +235,7 @@ def process_job(
             catalog,
             provider=str(snapshot["provider"]),
             model=str(snapshot["model"]),
-            max_output_tokens=int(snapshot["max_output_tokens"]),
+            max_output_tokens=snapshot_max_tokens,
             policy=policy,
             on_trace=record_trace,
             on_model_call=record_usage,
@@ -153,10 +246,22 @@ def process_job(
         if not heartbeat.active() or not chat_job_owned(conn, turn_id, worker_id):
             return
         citations = [item for item in result.evidence if item["evidence_id"] in result.citations]
-        complete_chat_turn(
+        _record_terminal(
             conn,
+            book_root,
             turn_id,
+            attempt,
+            worker_id,
+            heartbeat,
             status="succeeded",
+            audit_payload={
+                "citation_count": len(citations),
+                "action_count": len(result.trace),
+                "answer_chars": len(result.answer),
+                "prompt_hash": hashlib.sha256(result.final_prompt.encode("utf-8")).hexdigest(),
+                "provider_request_id": result.provider_request_id,
+                "usage": result.usage,
+            },
             answer=result.answer,
             citations=citations,
             retrieval={
@@ -167,38 +272,28 @@ def process_job(
             prompt_hash=hashlib.sha256(result.final_prompt.encode("utf-8")).hexdigest(),
             provider_request_id=result.provider_request_id,
             usage=result.usage,
-            claimed_by=worker_id,
         )
-    except ChatRetrievalError as exc:
-        if heartbeat.active():
-            complete_chat_turn(
-                conn,
-                turn_id,
-                status="refused",
-                answer=f"证据不足，无法回答：{exc}",
-                refusal_code=exc.code,
-                claimed_by=worker_id,
-            )
-    except ProviderUnavailable as exc:
-        if heartbeat.active():
-            complete_chat_turn(
-                conn,
-                turn_id,
-                status="failed",
-                error_code="provider_unavailable",
-                error_message=str(exc),
-                claimed_by=worker_id,
-            )
-    except Exception as exc:  # noqa: BLE001 - durable job boundary
-        if heartbeat.active():
-            complete_chat_turn(
-                conn,
-                turn_id,
-                status="failed",
-                error_code=type(exc).__name__,
-                error_message=str(exc)[:1000],
-                claimed_by=worker_id,
-            )
+    except BaseException as exc:  # noqa: BLE001 - durable job boundary
+        status, code, detail = _terminal_error(exc)
+        if not heartbeat.active():
+            return
+        if status == "refused":
+            answer = f"证据不足，无法回答：{exc}"
+            terminal_kwargs = {"answer": answer, "refusal_code": code}
+        else:
+            terminal_kwargs = {"error_code": code, "error_message": detail}
+        _record_terminal(
+            conn,
+            book_root,
+            turn_id,
+            attempt,
+            worker_id,
+            heartbeat,
+            status=status,
+            audit_payload={"error_code": code, "exception_type": type(exc).__name__},
+            error_payload={"error_code": code, "exception_type": type(exc).__name__},
+            **terminal_kwargs,
+        )
     finally:
         heartbeat.stop()
 

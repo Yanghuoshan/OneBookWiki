@@ -11,6 +11,41 @@ from onebookwiki.rendering import render_book
 
 
 class ProvenanceTest(unittest.TestCase):
+    def test_book3_shared_epub_locators_do_not_collapse_canonical_identity(self):
+        project = Path(__file__).resolve().parent.parent
+        book = project / "books" / "3"
+        source = json.loads((book / ".onebookwiki" / "source.json").read_text(encoding="utf-8"))
+        evidence = json.loads((book / "wiki" / "evidence.json").read_text(encoding="utf-8"))["evidence"]
+        outline = {item["id"]: item for item in source["source_structure"]["outline"]}
+        units = {int(item["chapter"]): item for item in source["source_structure"]["units"]}
+
+        fool_ship = outline["epub-outline-002"]
+        self.assertEqual(fool_ship["pageIds"], [f"chapter-{number:02d}" for number in range(5, 9)])
+        self.assertEqual(len(set(fool_ship["unitIds"])), 4)
+        self.assertEqual(
+            [units[number]["source_unit_id"] for number in range(5, 9)],
+            fool_ship["unitIds"],
+        )
+        self.assertEqual(
+            {(units[number]["locator"]["spine_index"], units[number]["locator"]["href"]) for number in range(5, 9)},
+            {(6, "index_split_004.html")},
+        )
+        self.assertEqual({units[number]["part"] for number in range(5, 9)}, {1, 2, 3, 4})
+        self.assertTrue(all(units[number]["part_count"] == 4 for number in range(5, 9)))
+        self.assertEqual({evidence[f"C{number}E1"]["chapter"] for number in range(5, 9)}, {5, 6, 7, 8})
+        self.assertEqual(len({evidence[f"C{number}E1"]["evidence_id"] for number in range(5, 9)}), 4)
+
+        asylum = outline["epub-outline-010"]
+        self.assertEqual(asylum["pageIds"], [f"chapter-{number:02d}" for number in range(29, 33)])
+        self.assertEqual(len(set(asylum["unitIds"])), 4)
+        self.assertEqual(
+            {(units[number]["locator"]["spine_index"], units[number]["locator"]["href"]) for number in range(29, 33)},
+            {(14, "index_split_012.html")},
+        )
+        canonical = {"C29E36", "C29E37", "C30E6", "C31E39", "C31E56", "C32E17"}
+        self.assertTrue(canonical.issubset(evidence))
+        self.assertEqual({evidence[item]["evidence_id"] for item in canonical}, canonical)
+
     def test_pdf_locator_uses_one_based_page_headings_and_ranges(self):
         text = """# Chapter 1: Sample
 

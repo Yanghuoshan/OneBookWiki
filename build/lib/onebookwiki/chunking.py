@@ -1,7 +1,7 @@
 """Deterministic, language-aware, line-tracked chunking for long chapters."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
 
@@ -10,6 +10,9 @@ from .markdown import sha256_text
 CJK_RE = re.compile(r"[⺀-⿿　-〿㐀-䶿一-鿿豈-﫿]")
 SENTENCE_RE = re.compile(r"(?<=[。！？；!?;])\s*|\n+")
 SOFT_BREAK_RE = re.compile(r"(?<=[，、：,:])\s*|\s+")
+CHUNK_PROFILE_REVISION = "smaller-v1"
+_CJK_DEFAULTS = (150, 25, 200)
+_LATIN_DEFAULTS = (200, 30, 250)
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,76 @@ class Chunk:
     end_line: int
     token_count: int
     content_hash: str
+    locator: dict[str, object] = field(default_factory=dict)
+
+
+_METADATA_RE = re.compile(r"^>\s*([^:]+):\s*(.*?)\s*$", re.MULTILINE)
+_PAGE_HEADING_RE = re.compile(r"^##\s+Page\s+(\d+)\s*$", re.IGNORECASE)
+
+
+def _metadata_locator(values: dict[str, str]) -> dict[str, object] | None:
+    raw = values.get("locator", "")
+    if not raw:
+        return None
+    try:
+        locator = __import__("json").loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return dict(locator) if isinstance(locator, dict) else None
+
+
+def _document_metadata(text: str) -> dict[str, str]:
+    return {key.strip().lower(): value.strip() for key, value in _METADATA_RE.findall(text)}
+
+
+def _page_numbers_for_lines(text: str, start_line: int, end_line: int) -> list[int]:
+    """Return PDF physical pages whose Markdown ranges overlap a chunk."""
+    lines = text.splitlines()
+    headings = [
+        (line_number, int(match.group(1)))
+        for line_number, line in enumerate(lines, 1)
+        if (match := _PAGE_HEADING_RE.match(line))
+    ]
+    pages: list[int] = []
+    for index, (heading_line, page) in enumerate(headings):
+        next_heading = headings[index + 1][0] if index + 1 < len(headings) else len(lines) + 1
+        if heading_line <= end_line and next_heading - 1 >= start_line:
+            pages.append(page)
+    return pages
+
+
+def locator_for_range(text: str, start_line: int, end_line: int, chapter: int) -> dict[str, object]:
+    """Build a precise evidence locator from normalized imported Markdown."""
+    values = _document_metadata(text)
+    native = _metadata_locator(values)
+    source_format = str((native or {}).get("format") or values.get("format", "")).upper()
+    if source_format == "PDF":
+        pages = _page_numbers_for_lines(text, start_line, end_line)
+        if pages:
+            return {"format": "PDF", "physical_page_start": min(pages), "physical_page_end": max(pages)}
+        page_range = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", values.get("pages", ""))
+        if page_range:
+            return {"format": "PDF", "physical_page_start": int(page_range.group(1)), "physical_page_end": int(page_range.group(2)), "precision": "chapter-range"}
+        return {"format": "PDF", "precision": "unknown"}
+    if native:
+        locator: dict[str, object] = dict(native)
+        locator.setdefault("kind", f"{source_format.lower()}_range" if source_format else "source_range")
+        locator["chapter"] = chapter
+        locator["source_line_start"] = start_line
+        locator["source_line_end"] = end_line
+        return locator
+    if source_format == "EPUB":
+        locator = {"format": "EPUB", "kind": "epub_spine", "chapter": chapter}
+        if values.get("spine"):
+            locator["spine_id"] = values["spine"]
+        if values.get("spine index"):
+            locator["spine_index"] = int(values["spine index"])
+        if values.get("href"):
+            locator["href"] = values["href"]
+        if values.get("fragment"):
+            locator["fragment"] = values["fragment"]
+        return locator
+    return {"format": source_format or "UNKNOWN", "kind": "source_range", "chapter": chapter, "source_line_start": start_line, "source_line_end": end_line}
 
 
 def count_tokens(text: str) -> int:
@@ -78,14 +151,14 @@ def _section_blocks(text: str) -> list[tuple[int, int, str, str]]:
     return blocks
 
 
-def _units(text: str, cjk: bool) -> list[str]:
+def _units(text: str, cjk: bool, max_tokens: int) -> list[str]:
     pattern = SENTENCE_RE if cjk else re.compile(r"\n+")
     units = [part.strip() for part in pattern.split(text) if part.strip()]
     if not cjk:
         return units
     refined: list[str] = []
     for unit in units:
-        if count_tokens(unit) <= 800:
+        if count_tokens(unit) <= max_tokens:
             refined.append(unit)
             continue
         refined.extend(part.strip() for part in SOFT_BREAK_RE.split(unit) if part.strip())
@@ -93,7 +166,7 @@ def _units(text: str, cjk: bool) -> list[str]:
 
 
 def _split_block(start: int, end: int, section: str, text: str, cjk: bool, max_tokens: int) -> list[tuple[int, int, str, str]]:
-    units = _units(text, cjk)
+    units = _units(text, cjk, max_tokens)
     if not units:
         return []
     result: list[tuple[int, int, str, str]] = []
@@ -123,12 +196,23 @@ def _split_block(start: int, end: int, section: str, text: str, cjk: bool, max_t
     return result
 
 
-def _make_chunk(blocks, source_path: str, chapter: int, ordinal: int) -> Chunk:
+def _make_chunk(blocks, source_path: str, chapter: int, ordinal: int, source_text: str) -> Chunk:
     start, _, section, _ = blocks[0]
     _, end, _, _ = blocks[-1]
     body = "\n\n".join(item[3] for item in blocks)
     digest = sha256_text(body)
-    return Chunk(f"{chapter:04d}-{ordinal:04d}-{digest[:12]}", source_path, chapter, section, body, start, end, count_tokens(body), digest)
+    return Chunk(
+        f"{chapter:04d}-{ordinal:04d}-{digest[:12]}",
+        source_path,
+        chapter,
+        section,
+        body,
+        start,
+        end,
+        count_tokens(body),
+        digest,
+        locator_for_range(source_text, start, end, chapter),
+    )
 
 
 def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_tokens: int, max_tokens: int) -> list[Chunk]:
@@ -139,7 +223,7 @@ def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_t
         if index:
             previous = chunks[index - 1]
             tail = previous.text
-            pieces = _units(tail, contains_cjk(tail))
+            pieces = _units(tail, contains_cjk(tail), max_tokens)
             overlap: list[str] = []
             total = 0
             for piece in reversed(pieces):
@@ -155,17 +239,54 @@ def _with_overlap(chunks: list[Chunk], source_path: str, chapter: int, overlap_t
                 if count_tokens(body) > max_tokens:
                     body = chunk.text
                 digest = sha256_text(body)
-                chunk = Chunk(f"{chapter:04d}-{index:04d}-{digest[:12]}", source_path, chapter, chunk.section, body, chunk.start_line, chunk.end_line, count_tokens(body), digest)
+                chunk = Chunk(
+                    f"{chapter:04d}-{index:04d}-{digest[:12]}",
+                    source_path,
+                    chapter,
+                    chunk.section,
+                    body,
+                    chunk.start_line,
+                    chunk.end_line,
+                    count_tokens(body),
+                    digest,
+                    chunk.locator,
+                )
         result.append(chunk)
     return result
+
+
+def chunking_profile(
+    text: str,
+    target_words: int | None = None,
+    overlap_words: int | None = None,
+    *,
+    target_tokens: int | None = None,
+    overlap_tokens: int | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, int | str]:
+    """Return the normalized chunking budget applied to a document."""
+    cjk = contains_cjk(text)
+    default_target, default_overlap, default_maximum = _CJK_DEFAULTS if cjk else _LATIN_DEFAULTS
+    target = target_tokens if target_tokens is not None else (default_target if cjk or target_words is None else target_words)
+    overlap = overlap_tokens if overlap_tokens is not None else (default_overlap if cjk or overlap_words is None else overlap_words)
+    maximum = max_tokens if max_tokens is not None else max(default_maximum, target + overlap)
+    target = max(1, min(target, maximum))
+    overlap = max(0, min(overlap, target // 2))
+    return {
+        "revision": CHUNK_PROFILE_REVISION,
+        "language": "cjk" if cjk else "latin",
+        "target_tokens": target,
+        "overlap_tokens": overlap,
+        "max_tokens": maximum,
+    }
 
 
 def chunk_text(
     text: str,
     source_path: str,
     chapter: int,
-    target_words: int = 263,
-    overlap_words: int = 38,
+    target_words: int | None = None,
+    overlap_words: int | None = None,
     *,
     target_tokens: int | None = None,
     overlap_tokens: int | None = None,
@@ -173,16 +294,21 @@ def chunk_text(
 ) -> list[Chunk]:
     """Split prose by language-aware boundaries with a hard token ceiling.
 
-    ``target_words`` and ``overlap_words`` remain for compatibility. Explicit
-    token arguments take precedence; CJK defaults are 225/30/300 and Latin
-    defaults are 263/38/338.
+    Explicit token arguments take precedence. The defaults are 150/25/200 for
+    CJK documents and 200/30/250 for Latin documents.
     """
-    cjk = contains_cjk(text)
-    target = target_tokens if target_tokens is not None else (225 if cjk else target_words)
-    overlap = overlap_tokens if overlap_tokens is not None else (30 if cjk else overlap_words)
-    maximum = max_tokens if max_tokens is not None else (300 if cjk else max(338, target + overlap))
-    target = max(1, min(target, maximum))
-    overlap = max(0, min(overlap, target // 2))
+    profile = chunking_profile(
+        text,
+        target_words,
+        overlap_words,
+        target_tokens=target_tokens,
+        overlap_tokens=overlap_tokens,
+        max_tokens=max_tokens,
+    )
+    cjk = profile["language"] == "cjk"
+    target = int(profile["target_tokens"])
+    overlap = int(profile["overlap_tokens"])
+    maximum = int(profile["max_tokens"])
 
     units: list[tuple[int, int, str, str]] = []
     for start, end, section, body in _section_blocks(text):
@@ -194,7 +320,7 @@ def chunk_text(
     for block in units:
         block_tokens = count_tokens(block[3])
         if pending and pending_tokens + block_tokens > target:
-            grouped.append(_make_chunk(pending, source_path, chapter, len(grouped)))
+            grouped.append(_make_chunk(pending, source_path, chapter, len(grouped), text))
             # Apply overlap only after chunks have been formed. Carrying whole
             # blocks here can immediately exceed the target when a CJK
             # sentence is larger than the requested overlap budget.
@@ -202,7 +328,7 @@ def chunk_text(
         pending.append(block)
         pending_tokens += block_tokens
     if pending:
-        grouped.append(_make_chunk(pending, source_path, chapter, len(grouped)))
+        grouped.append(_make_chunk(pending, source_path, chapter, len(grouped), text))
     return _with_overlap(grouped, source_path, chapter, overlap, maximum)
 
 

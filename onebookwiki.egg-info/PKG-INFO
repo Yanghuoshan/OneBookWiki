@@ -34,6 +34,7 @@ Requires-Dist: fastapi>=0.115; extra == "server"
 Requires-Dist: uvicorn[standard]>=0.32; extra == "server"
 Requires-Dist: python-multipart>=0.0.12; extra == "server"
 Requires-Dist: python-dotenv>=1.0; extra == "server"
+Requires-Dist: openai>=1.0; extra == "server"
 Provides-Extra: all
 Requires-Dist: tiktoken>=0.7; extra == "all"
 Requires-Dist: numpy>=1.26; extra == "all"

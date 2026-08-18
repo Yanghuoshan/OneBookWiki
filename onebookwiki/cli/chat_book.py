@@ -5,12 +5,24 @@ import argparse
 import sys
 from pathlib import Path
 
+from onebookwiki.answer_generation import generate_validated_answer
+from onebookwiki.chat_retrieval import (
+    ChatRetrievalError,
+    annotate_validated_raw_context,
+    resolve_validated_evidence,
+)
 from onebookwiki.index import LocalIndex
 from onebookwiki.ledger import append_usage
-from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder, generate_response
+from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder
 from onebookwiki.remote_index import CloudVectorIndex
 from onebookwiki.retrieval import HybridRetriever, LexicalRetriever, rerank_results, search_project, vector_results
-from onebookwiki.wiki_retrieval import assemble_wiki_first_context, build_wiki_first_prompt, search_artifacts, search_wiki
+from onebookwiki.wiki_retrieval import (
+    assemble_wiki_first_context,
+    build_wiki_first_prompt,
+    render_context_blocks,
+    search_artifacts,
+    search_wiki,
+)
 
 
 def raw_results(root: Path, args: argparse.Namespace):
@@ -41,15 +53,52 @@ def ask(root: Path, question: str, args: argparse.Namespace) -> int:
     if not context:
         print("No wiki page, artifact, or indexed raw evidence matched.")
         return 0
+    if args.retrieval_only:
+        print("# Retrieved OneBookWiki Context\n")
+        print(context)
+        return 0
+    selected_chunk_ids = {
+        str(item.get("chunk_id", ""))
+        for item in chunks
+        if item.get("source_kind") == "raw" and str(item.get("chunk_id", ""))
+    }
+    raw_candidates = [
+        item for item in raw
+        if str(item.chunk.get("chunk_id", "")) in selected_chunk_ids
+    ]
+    evidence = resolve_validated_evidence(root, raw_candidates, limit=max(1, len(raw_candidates)))
+    allowed_evidence_ids = annotate_validated_raw_context(chunks, evidence)
+    if not allowed_evidence_ids:
+        print("\nNo validated raw evidence was available for generation.", file=sys.stderr)
+        return 1
+    context = render_context_blocks(chunks)
     print("# Retrieved OneBookWiki Context\n")
     print(context)
-    if args.retrieval_only:
-        return 0
-    prompt = build_wiki_first_prompt(question, context)
+    prompt = build_wiki_first_prompt(question, context, sorted(allowed_evidence_ids))
     try:
-        response = generate_response(prompt, args.provider, args.model, args.max_output_tokens)
-        append_usage(root, run_id="chat", node_id="chat", stage="chat", attempt=1, provider=args.provider, model=response.model or args.model or "unknown", usage=response.usage, estimated=response.estimated_usage, input_rate=args.input_rate, output_rate=args.output_rate, prompt=prompt)
-    except ProviderUnavailable as error:
+        validated = generate_validated_answer(
+            prompt,
+            allowed_evidence_ids,
+            provider=args.provider,
+            model=args.model,
+            max_output_tokens=args.max_output_tokens,
+        )
+        response = validated.response
+        append_usage(
+            root,
+            run_id="chat",
+            node_id="chat",
+            stage="chat_answer" if not validated.repair_count else "chat_answer_repair",
+            attempt=1 + validated.repair_count,
+            provider=args.provider,
+            model=response.model or args.model or "unknown",
+            usage=response.usage,
+            estimated=response.estimated_usage,
+            input_rate=args.input_rate,
+            output_rate=args.output_rate,
+            prompt=validated.prompt,
+        )
+    except (ProviderUnavailable, ChatRetrievalError) as error:
         print(f"\nGeneration unavailable: {error}", file=sys.stderr)
         return 1
     print("\n# Answer\n")

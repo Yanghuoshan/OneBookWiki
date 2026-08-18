@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from server.config import ChatSettings, agent_policy_snapshot, generation_snapshot
+from server.config import ChatSettings, agent_policy_snapshot, generation_snapshot, verify_generation_snapshot
 from server.database import append_chat_turn, create_chat_conversation, get_book, get_chat_conversation
 from onebookwiki.providers import GenerationConfig
 
@@ -66,9 +66,9 @@ def create_conversation(conn, books_root: Path, book_id: int, question: str, set
         try:
             import json
             snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            if not isinstance(snapshot, dict) or not all(key in snapshot for key in ("provider", "model", "max_output_tokens", "config_hash")):
+            if not isinstance(snapshot, dict):
                 raise ValueError("invalid generation snapshot")
-            generation = snapshot
+            generation = verify_generation_snapshot(snapshot)
         except (OSError, ValueError, TypeError):
             raise HTTPException(status_code=409, detail="Book generation configuration is invalid")
     else:

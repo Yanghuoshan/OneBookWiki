@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,11 +76,48 @@ def agent_policy_snapshot(embedding_backend: str | None = None) -> dict[str, obj
         "embedding_backend": embedding_backend or os.getenv(
             "ONEBOOKWIKI_CHAT_EMBEDDING_BACKEND", AgentPolicy.embedding_backend
         ),
+        "json_repairs": os.getenv(
+            "ONEBOOKWIKI_CHAT_AGENT_JSON_REPAIRS", AgentPolicy.json_repairs
+        ),
         "final_answer_repairs": os.getenv(
             "ONEBOOKWIKI_CHAT_FINAL_ANSWER_REPAIRS", AgentPolicy.final_answer_repairs
         ),
     }
     return AgentPolicy.from_dict(values).to_dict()
+
+
+def generation_config_hash(snapshot: Mapping[str, object]) -> str:
+    """Hash the exact persisted payload, excluding only its hash field."""
+    payload = dict(snapshot)
+    payload.pop("config_hash", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def verify_generation_snapshot(
+    snapshot: Mapping[str, object],
+    *,
+    expected_hash: str | None = None,
+) -> dict[str, object]:
+    """Validate a snapshot before applying any compatibility defaults."""
+    value = dict(snapshot)
+    if not all(key in value for key in ("provider", "model", "max_output_tokens", "config_hash")):
+        raise ValueError("generation snapshot is missing required fields")
+    if not isinstance(value["provider"], str) or not isinstance(value["model"], str):
+        raise ValueError("generation snapshot provider/model must be strings")
+    try:
+        max_tokens = int(value["max_output_tokens"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("generation snapshot max_output_tokens must be an integer") from exc
+    if max_tokens < 1:
+        raise ValueError("generation snapshot max_output_tokens must be positive")
+    actual = generation_config_hash(value)
+    stored = str(value["config_hash"])
+    if not hmac.compare_digest(actual, stored):
+        raise ValueError("generation snapshot hash is invalid")
+    if expected_hash is not None and not hmac.compare_digest(stored, str(expected_hash)):
+        raise ValueError("generation snapshot does not match conversation hash")
+    return value
 
 
 def generation_snapshot(
@@ -94,6 +133,5 @@ def generation_snapshot(
         "max_output_tokens": int(max_output_tokens),
         "agent_policy": agent_policy or agent_policy_snapshot(),
     }
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    value["config_hash"] = hashlib.sha256(encoded).hexdigest()
+    value["config_hash"] = generation_config_hash(value)
     return value

@@ -18,6 +18,7 @@ class EvidenceRef:
     quote: str = ""
     page: int | None = None
     spine: str | None = None
+    locator: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -33,13 +34,27 @@ class Claim:
 class ChapterInterpretation:
     chapter: int
     title: str
+    source_unit_id: str = ""
+    source_title: str = ""
+    source_type: str = ""
+    breadcrumb: list[str] = field(default_factory=list)
+    physical_page_start: int | None = None
+    physical_page_end: int | None = None
+    spine: str = ""
+    spine_index: int | None = None
+    href: str = ""
+    fragment: str = ""
+    locator: dict[str, Any] = field(default_factory=dict)
+    structure_confidence: float = 0.0
+    part: int = 1
+    part_count: int = 1
     purpose: str = ""
     executive_summary: str = ""
     core_thesis: str = ""
     argument_map: str = ""
     key_concepts: list[str] = field(default_factory=list)
-    evidence_examples: list[Claim] = field(default_factory=list)
-    important_quotations: list[Claim] = field(default_factory=list)
+    observations: list[Claim] = field(default_factory=list)
+    quotations: list[Claim] = field(default_factory=list)
     relation_to_previous: str = ""
     relation_to_following: str = ""
     cross_chapter_connections: list[Claim] = field(default_factory=list)
@@ -106,6 +121,7 @@ def _evidence(value: dict[str, Any]) -> EvidenceRef:
         quote=str(value.get("quote", "")),
         page=int(value["page"]) if value.get("page") is not None else None,
         spine=str(value["spine"]) if value.get("spine") is not None else None,
+        locator=dict(value.get("locator") or {}),
     )
 
 
@@ -126,13 +142,27 @@ def chapter_from_dict(value: dict[str, Any]) -> ChapterInterpretation:
     return ChapterInterpretation(
         chapter=int(value.get("chapter", 0)),
         title=str(value.get("title", "")),
+        source_unit_id=str(value.get("source_unit_id", "")),
+        source_title=str(value.get("source_title", "")),
+        source_type=str(value.get("source_type", value.get("kind", ""))),
+        breadcrumb=[str(item) for item in value.get("breadcrumb", ())],
+        physical_page_start=int(value["physical_page_start"]) if value.get("physical_page_start") is not None else None,
+        physical_page_end=int(value["physical_page_end"]) if value.get("physical_page_end") is not None else None,
+        spine=str(value.get("spine", "")),
+        spine_index=int(value["spine_index"]) if value.get("spine_index") is not None else None,
+        href=str(value.get("href", "")),
+        fragment=str(value.get("fragment", "")),
+        locator=dict(value.get("locator") or {}),
+        structure_confidence=float(value.get("structure_confidence", value.get("confidence", 0.0)) or 0.0),
+        part=int(value.get("part", 1) or 1),
+        part_count=int(value.get("part_count", 1) or 1),
         purpose=str(value.get("purpose", "")),
         executive_summary=str(value.get("executive_summary", "")),
         core_thesis=str(value.get("core_thesis", "")),
         argument_map=str(value.get("argument_map", "")),
         key_concepts=[str(item) for item in value.get("key_concepts", ())],
-        evidence_examples=[_claim(item) for item in value.get("evidence_examples", ())],
-        important_quotations=[_claim(item) for item in value.get("important_quotations", ())],
+        observations=[_claim(item) for item in value.get("observations", ())],
+        quotations=[_claim(item) for item in value.get("quotations", ())],
         relation_to_previous=str(value.get("relation_to_previous", "")),
         relation_to_following=str(value.get("relation_to_following", "")),
         cross_chapter_connections=[_claim(item) for item in value.get("cross_chapter_connections", ())],
@@ -161,6 +191,22 @@ def rollup_from_dict(value: dict[str, Any]) -> Rollup:
     )
 
 
+def _chapter_summaries(value: Any) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): str(summary) for key, summary in value.items()}
+    if isinstance(value, list):
+        result: dict[str, str] = {}
+        for index, item in enumerate(value, 1):
+            if isinstance(item, dict):
+                key = item.get("chapter", item.get("chapter_number", index))
+                summary = item.get("summary", item.get("text", item.get("content", "")))
+                result[str(key)] = str(summary)
+            else:
+                result[str(index)] = str(item)
+        return result
+    return {}
+
+
 def book_from_dict(value: dict[str, Any]) -> BookSynthesis:
     return BookSynthesis(
         title=str(value.get("title", "Untitled book")),
@@ -172,7 +218,7 @@ def book_from_dict(value: dict[str, Any]) -> BookSynthesis:
         arguments=[_claim(item) for item in value.get("arguments", ())],
         terminology=[str(item) for item in value.get("terminology", ())],
         unresolved_questions=[str(item) for item in value.get("unresolved_questions", ())],
-        chapter_summaries={str(k): str(v) for k, v in value.get("chapter_summaries", {}).items()},
+        chapter_summaries=_chapter_summaries(value.get("chapter_summaries", {})),
         evidence=[_evidence(item) for item in value.get("evidence", ())],
         schema_version=int(value.get("schema_version", SCHEMA_VERSION)),
     )

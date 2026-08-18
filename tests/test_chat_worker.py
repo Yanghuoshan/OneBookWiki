@@ -13,7 +13,7 @@ from onebookwiki.chat_retrieval import ChatRetrievalError
 from onebookwiki.ledger import append_chat_model_call_audit
 from onebookwiki.providers import GenerationConfig, GenerationResponse
 from server.chat_worker import process_job
-from server.config import ChatSettings, generation_snapshot
+from server.config import ChatSettings, agent_policy_snapshot, generation_config_hash, generation_snapshot
 from server.database import (
     claim_chat_job,
     create_chat_conversation,
@@ -85,6 +85,14 @@ class RetrievalFailureRunner:
         raise ChatRetrievalError("answer_uncited_claim", "answer paragraph has no citation")
 
 
+class RawEvidenceMissingRunner:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def run(self, question, history):
+        raise ChatRetrievalError("raw_evidence_missing", "no validated raw evidence")
+
+
 class ChatWorkerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -108,6 +116,25 @@ class ChatWorkerTest(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
         self.tmp.cleanup()
+
+    def test_snapshot_captures_json_repairs_override_and_hashes_exact_payload(self):
+        with patch.dict(os.environ, {"ONEBOOKWIKI_CHAT_AGENT_JSON_REPAIRS": "0"}, clear=False):
+            policy = agent_policy_snapshot()
+        self.assertEqual(policy["json_repairs"], 0)
+        snapshot = generation_snapshot("test-provider", "test-model", 1800, policy)
+        self.assertEqual(snapshot["config_hash"], generation_config_hash(snapshot))
+
+    def test_snapshot_hash_detects_mutation(self):
+        snapshot = dict(self.generation)
+        snapshot["model"] = "tampered"
+        turn_id, job = self.create_job()
+        job["generation_config_json"] = json.dumps(snapshot)
+        job["generation_config_json"] = json.dumps(snapshot)
+        runner_patch, catalog_patch, embedder_patch = self.runner_mocks(SuccessfulRunner)
+        with runner_patch, catalog_patch, embedder_patch:
+            process_job(self.conn, job, self.root, self.settings, "worker-a", self.database)
+        row = self.conn.execute("SELECT status, error_code FROM chat_turns WHERE id = ?", (turn_id,)).fetchone()
+        self.assertEqual((row["status"], row["error_code"]), ("failed", "generation_config_invalid"))
 
     def create_job(self):
         _, turn_id = create_chat_conversation(
@@ -157,14 +184,19 @@ class ChatWorkerTest(unittest.TestCase):
 
         audit_path = self.book_root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json"
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        self.assertEqual(audit["schema_version"], 1)
+        self.assertEqual(audit["schema_version"], 2)
         self.assertEqual(audit["turn_id"], turn_id)
         self.assertEqual([item["stage"] for item in audit["calls"]], ["chat_plan", "chat_final"])
+        self.assertEqual([item["type"] for item in audit["events"]], ["action", "action", "terminal"])
+        self.assertEqual(audit["events"][-1]["payload"]["status"], "succeeded")
         self.assertEqual([item["prompt"] for item in audit["calls"]], ["planner prompt", "final prompt"])
         self.assertEqual([item["output"] for item in audit["calls"]], ['{"type":"action"}', "Supported answer. C1E1"])
         self.assertEqual([item["request_id"] for item in audit["calls"]], [None, "request-1"])
         self.assertEqual([item["usage"]["total_tokens"] for item in audit["calls"]], [3, 6])
         self.assertTrue(all(item["prompt_hash"] for item in audit["calls"]))
+        event_text = json.dumps(audit["events"], ensure_ascii=False)
+        self.assertNotIn("raw/chapters", event_text)
+        self.assertNotIn("Supported answer", event_text)
 
     def test_chat_audit_appends_calls_across_attempts(self):
         turn_id, _ = self.create_job()
@@ -197,11 +229,35 @@ class ChatWorkerTest(unittest.TestCase):
             )
 
         row = self.conn.execute(
+            "SELECT status, error_code, answer FROM chat_turns WHERE id = ?", (turn_id,)
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["error_code"], "answer_uncited_claim")
+        audit = json.loads((self.book_root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["type"] for item in audit["events"]], ["error", "terminal"])
+
+    def test_raw_evidence_missing_becomes_refused_turn(self):
+        turn_id, job = self.create_job()
+        runner_patch, catalog_patch, embedder_patch = self.runner_mocks(RawEvidenceMissingRunner)
+        with runner_patch, catalog_patch, embedder_patch:
+            process_job(
+                self.conn,
+                job,
+                self.root,
+                self.settings,
+                "worker-a",
+                self.database,
+            )
+
+        row = self.conn.execute(
             "SELECT status, refusal_code, answer FROM chat_turns WHERE id = ?", (turn_id,)
         ).fetchone()
         self.assertEqual(row["status"], "refused")
-        self.assertEqual(row["refusal_code"], "answer_uncited_claim")
+        self.assertEqual(row["refusal_code"], "raw_evidence_missing")
         self.assertIn("证据不足", row["answer"])
+        audit = json.loads((self.book_root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual([item["type"] for item in audit["events"]], ["error", "terminal"])
+        self.assertEqual(audit["events"][-1]["payload"]["status"], "refused")
 
     def test_worker_does_not_write_terminal_result_after_ownership_loss(self):
         turn_id, job = self.create_job()

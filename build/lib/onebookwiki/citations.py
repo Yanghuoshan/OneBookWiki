@@ -8,6 +8,63 @@ from .manifest import Manifest
 from .models import EvidenceRef
 
 
+def locator_for_ref(ref: EvidenceRef) -> dict[str, object]:
+    """Normalize new and legacy evidence provenance into one locator."""
+    if ref.locator:
+        return dict(ref.locator)
+    if ref.page is not None:
+        return {"format": "PDF", "physical_page_start": ref.page, "physical_page_end": ref.page}
+    if ref.spine:
+        return {"format": "EPUB", "chapter": ref.chapter, "spine_id": ref.spine}
+    return {"format": "UNKNOWN", "chapter": ref.chapter}
+
+
+def display_label(ref: EvidenceRef) -> str:
+    locator = locator_for_ref(ref)
+    source_format = str(locator.get("format", "")).upper()
+    if source_format == "PDF":
+        start = locator.get("physical_page_start")
+        end = locator.get("physical_page_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            return f"PDF p. {start}" if start == end else f"PDF pp. {start}-{end}"
+        return f"PDF Chapter {ref.chapter}"
+    if source_format == "EPUB":
+        label = f"EPUB Ch. {locator.get('chapter', ref.chapter)}"
+        if locator.get("spine_index") is not None:
+            label += f" · Spine {locator['spine_index']}"
+        elif locator.get("spine_id"):
+            label += f" · Spine {locator['spine_id']}"
+        href = str(locator.get("href", ""))
+        fragment = str(locator.get("fragment", ""))
+        if href:
+            label += f" · {href}{('#' + fragment) if fragment else ''}"
+        return label
+    if source_format == "TXT":
+        start = locator.get("line_start")
+        end = locator.get("line_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            return f"TXT line {start}" if start == end else f"TXT lines {start}-{end}"
+    if source_format in {"DOC", "DOCX"}:
+        start = locator.get("paragraph_start")
+        end = locator.get("paragraph_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            prefix = source_format
+            return f"{prefix} paragraph {start}" if start == end else f"{prefix} paragraphs {start}-{end}"
+    if source_format == "HTML":
+        href = str(locator.get("href", ""))
+        fragment = str(locator.get("fragment", ""))
+        if href or fragment:
+            return f"HTML {href or 'document'}{('#' + fragment) if fragment else ''}"
+        start = locator.get("block_start")
+        end = locator.get("block_end", start)
+        if isinstance(start, int) and isinstance(end, int):
+            return f"HTML block {start}" if start == end else f"HTML blocks {start}-{end}"
+    if source_format in {"MOBI", "AZW", "AZW3"}:
+        section = locator.get("section")
+        return f"{source_format} section {section}" if section else f"{source_format} Ch. {locator.get('chapter', ref.chapter)}"
+    return f"Chapter {ref.chapter} · lines {ref.start_line}-{ref.end_line}"
+
+
 def evidence_map(root: Path) -> dict[str, EvidenceRef]:
     manifest = Manifest.load(root)
     result: dict[str, EvidenceRef] = {}
@@ -15,7 +72,16 @@ def evidence_map(root: Path) -> dict[str, EvidenceRef]:
         source = str(chunk.get("source_path", ""))
         chapter = int(chunk.get("chapter", 0))
         evidence_id = f"{chapter}:{chunk_id}"
-        result[evidence_id] = EvidenceRef(evidence_id, chunk_id, source, chapter, int(chunk.get("start_line", 0)), int(chunk.get("end_line", 0)), str(chunk.get("text", "")))
+        result[evidence_id] = EvidenceRef(
+            evidence_id,
+            chunk_id,
+            source,
+            chapter,
+            int(chunk.get("start_line", 0)),
+            int(chunk.get("end_line", 0)),
+            str(chunk.get("text", "")),
+            locator=dict(chunk.get("locator") or {}),
+        )
     return result
 
 

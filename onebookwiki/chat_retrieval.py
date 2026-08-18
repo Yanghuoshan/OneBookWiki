@@ -293,7 +293,30 @@ def resolve_validated_evidence(root: Path, results: Sequence[Result | dict[str, 
     unique: dict[str, dict[str, Any]] = {}
     for record in records:
         unique.setdefault(str(record["evidence_id"]), record)
-    return list(unique.values())[: max(1, min(limit, 6))]
+    if limit <= 0:
+        return []
+    return list(unique.values())[:limit]
+
+
+def annotate_validated_raw_context(
+    selected: list[dict[str, Any]],
+    evidence: Sequence[dict[str, Any]],
+) -> set[str]:
+    """Attach validated canonical IDs to selected raw blocks and return the allowlist."""
+    by_chunk_id = {
+        str(item.get("chunk_id", "")): str(item.get("evidence_id", ""))
+        for item in evidence
+        if str(item.get("chunk_id", "")) and _canonical_evidence_id(item.get("evidence_id"))
+    }
+    allowed: set[str] = set()
+    for item in selected:
+        if str(item.get("source_kind", "raw")) != "raw":
+            continue
+        evidence_id = by_chunk_id.get(str(item.get("chunk_id", "")), "")
+        if evidence_id:
+            item["evidence_id"] = evidence_id
+            allowed.add(evidence_id)
+    return allowed
 
 
 def validate_final_answer(answer: str, allowed_evidence_ids: set[str]) -> list[str]:

@@ -28,18 +28,47 @@ class LocalIndex:
                 pass
         return list(self.manifest.chunks.values())
 
-    def update(self, chapter_path: Path, chapter: int, chunks: list[Chunk]) -> tuple[set[str], set[str]]:
+    def update(
+        self,
+        chapter_path: Path,
+        chapter: int,
+        chunks: list[Chunk],
+        *,
+        chunking: dict | None = None,
+        index_identity: dict | None = None,
+    ) -> tuple[set[str], set[str]]:
         serialized = [chunk.__dict__ for chunk in chunks]
         relative_path = chapter_path if not chapter_path.is_absolute() else chapter_path.relative_to(self.root)
         actual_path = self.root / relative_path
-        removed, added = self.manifest.update_chapter(relative_path, chapter, serialized, self.manifest.chapter_hash(actual_path))
+        removed, added = self.manifest.update_chapter(
+            relative_path,
+            chapter,
+            serialized,
+            self.manifest.chapter_hash(actual_path),
+            chunking=chunking,
+            index_identity=index_identity,
+        )
         self.save()
         return removed, added
 
-    def rebuild(self, chapter_files: list[tuple[Path, int]], chunker) -> dict:
+    def rebuild(
+        self,
+        chapter_files: list[tuple[Path, int]],
+        chunker,
+        *,
+        chunking: dict | None = None,
+        index_identity: dict | None = None,
+    ) -> dict:
         for path, chapter in chapter_files:
             chunks = chunker(path, chapter)
             relative_path = path if not path.is_absolute() else path.relative_to(self.root)
-            self.manifest.update_chapter(relative_path, chapter, [chunk.__dict__ for chunk in chunks], self.manifest.chapter_hash(self.root / relative_path))
+            self.manifest.update_chapter(
+                relative_path,
+                chapter,
+                [chunk.__dict__ for chunk in chunks],
+                self.manifest.chapter_hash(self.root / relative_path),
+                chunking=chunking,
+                index_identity=index_identity,
+            )
         self.save()
         return self.manifest.chapters

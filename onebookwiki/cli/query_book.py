@@ -6,7 +6,13 @@ import sys
 from pathlib import Path
 
 from onebookwiki.chunking import count_tokens
-from onebookwiki.context import assemble_context
+from onebookwiki.answer_generation import generate_validated_answer
+from onebookwiki.chat_retrieval import (
+    ChatRetrievalError,
+    annotate_validated_raw_context,
+    resolve_validated_evidence,
+)
+from onebookwiki.context import assemble_context, render_context
 from onebookwiki.index import LocalIndex
 from onebookwiki.providers import (
     CANONICAL_GENERATION_MAX_OUTPUT_TOKENS,
@@ -14,7 +20,6 @@ from onebookwiki.providers import (
     ProviderUnavailable,
     build_embedder,
     build_grounded_prompt,
-    generate,
 )
 from onebookwiki.remote_index import CloudVectorIndex
 from onebookwiki.retrieval import (
@@ -39,7 +44,7 @@ def _effective_context(
     """Reserve provider prompt/output capacity without relaxing max_tokens."""
     budget = max(1, max_tokens)
     if generation_config.context_window:
-        prompt_overhead = count_tokens(build_grounded_prompt(question, ""))
+        prompt_overhead = count_tokens(build_grounded_prompt(question, "", ()))
         budget = min(budget, generation_config.context_window - output_tokens - prompt_overhead)
         budget = max(0, budget)
     context, chunks = assemble_context(results, budget, max_per_chapter)
@@ -139,20 +144,37 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         context, chunks = assemble_context(results, args.max_tokens, args.max_per_chapter)
-    print("# Retrieved Evidence\n")
-    print(f"{len(chunks)} chunk(s), bounded to {args.max_tokens} tokens\n")
-    print(context)
+    if not args.generate:
+        print("# Retrieved Evidence\n")
+        print(f"{len(chunks)} chunk(s), bounded to {args.max_tokens} tokens\n")
+        print(context)
     if args.generate:
-        prompt = build_grounded_prompt(args.query, context)
+        evidence = resolve_validated_evidence(root, results, limit=max(1, len(results)))
+        allowed_evidence_ids = annotate_validated_raw_context(chunks, evidence)
+        if not allowed_evidence_ids:
+            error = ChatRetrievalError("raw_evidence_missing", "没有可用于生成回答的已验证原文证据。")
+            print(f"\nGeneration unavailable: {error}", file=sys.stderr)
+            return 1 if args.strict_generation else 0
+        context = render_context(chunks)
+        print("# Retrieved Evidence\n")
+        print(f"{len(chunks)} chunk(s), bounded to {args.max_tokens} tokens\n")
+        print(context)
+        prompt = build_grounded_prompt(args.query, context, sorted(allowed_evidence_ids))
         try:
-            answer = generate(prompt, args.provider, args.model, args.max_output_tokens)
-        except ProviderUnavailable as error:
+            validated = generate_validated_answer(
+                prompt,
+                allowed_evidence_ids,
+                provider=args.provider,
+                model=args.model,
+                max_output_tokens=args.max_output_tokens,
+            )
+        except (ProviderUnavailable, ChatRetrievalError) as error:
             print(f"\nGeneration unavailable: {error}", file=sys.stderr)
             if args.strict_generation:
                 return 1
         else:
             print("\n# Answer\n")
-            print(answer)
+            print(validated.response.text)
     return 0
 
 

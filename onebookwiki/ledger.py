@@ -51,6 +51,9 @@ def append_chat_model_call_audit(
         calls = document.get("calls")
         if not isinstance(calls, list):
             calls = []
+        events = document.get("events")
+        if not isinstance(events, list):
+            events = []
         record = {
             "sequence": len(calls) + 1,
             "attempt": int(attempt),
@@ -67,9 +70,92 @@ def append_chat_model_call_audit(
         }
         calls.append(record)
         document = {
-            "schema_version": 1,
+            "schema_version": 2,
             "turn_id": turn_id,
             "calls": calls,
+            "events": events,
+        }
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, target)
+        return record
+
+
+_AUDIT_RAW_TEXT_KEYS = {"answer", "content", "excerpt", "output", "prompt", "query", "question", "quote", "text"}
+
+
+def _bounded_audit_value(value: Any, depth: int = 0) -> Any:
+    """Keep route metadata while excluding raw evidence bodies from events."""
+    if depth >= 5:
+        return "[depth limit]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return " ".join(value.split())[:500]
+    if isinstance(value, (list, tuple)):
+        return [_bounded_audit_value(item, depth + 1) for item in value[:20]]
+    if isinstance(value, dict):
+        bounded: dict[str, Any] = {}
+        for raw_key, item in list(value.items())[:40]:
+            key = str(raw_key)[:100]
+            if key in _AUDIT_RAW_TEXT_KEYS or key in {"locator", "locators", "source_path", "path", "href", "spine"}:
+                continue
+            if key == "evidence" and isinstance(item, list):
+                bounded["evidence_count"] = len(item)
+                bounded["evidence_ids"] = [
+                    str(record.get("evidence_id"))
+                    for record in item[:20]
+                    if isinstance(record, dict) and record.get("evidence_id")
+                ]
+                continue
+            bounded[key] = _bounded_audit_value(item, depth + 1)
+        return bounded
+    return " ".join(str(value).split())[:500]
+
+
+def append_chat_audit_event(
+    root: Path,
+    *,
+    turn_id: str,
+    attempt: int,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Append a bounded non-model event to the turn audit document."""
+    target = root / ".onebookwiki" / "chat-audit" / f"{turn_id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_usage_lock(target)
+    with lock:
+        if target.is_file():
+            document = json.loads(target.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                raise ValueError(f"chat audit is not a JSON object: {target}")
+        else:
+            document = {}
+        calls = document.get("calls")
+        if not isinstance(calls, list):
+            calls = []
+        events = document.get("events")
+        if not isinstance(events, list):
+            events = []
+        dropped = int(document.get("events_dropped", 0) or 0)
+        record = {
+            "sequence": len(events) + dropped + 1,
+            "attempt": int(attempt),
+            "type": str(event_type)[:100],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": _bounded_audit_value(payload or {}),
+        }
+        if len(events) < 256:
+            events.append(record)
+        else:
+            dropped += 1
+        document = {
+            "schema_version": 2,
+            "turn_id": turn_id,
+            "calls": calls,
+            "events": events,
+            "events_dropped": dropped,
         }
         temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
         temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

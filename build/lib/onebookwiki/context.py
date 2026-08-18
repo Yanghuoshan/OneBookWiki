@@ -1,5 +1,6 @@
 """Bounded context assembly for low-token book queries."""
 from __future__ import annotations
+
 from .retrieval import Result
 from .chunking import count_tokens
 
@@ -17,6 +18,19 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
         else:
             high = middle - 1
     return best or text[:1]
+
+
+def render_context(selected: list[dict]) -> str:
+    parts = []
+    for item in selected:
+        location = f"lines {item.get('start_line')}-{item.get('end_line')}"
+        evidence_id = str(item.get("evidence_id", ""))
+        identity = f" [{evidence_id}]" if evidence_id else ""
+        parts.append(
+            f"## Chapter {item.get('chapter')} ({item.get('source_path')}, {location}){identity}\n\n"
+            f"{item['text']}"
+        )
+    return "\n\n---\n\n".join(parts)
 
 
 def assemble_context(results: list[Result], max_tokens: int = 8000, max_per_chapter: int = 3) -> tuple[str, list[dict]]:
@@ -46,8 +60,4 @@ def assemble_context(results: list[Result], max_tokens: int = 8000, max_per_chap
         seen_hashes.add(digest)
         per_chapter[chapter] = per_chapter.get(chapter, 0) + 1
         used += tokens
-    parts = []
-    for item in selected:
-        location = f"lines {item.get('start_line')}-{item.get('end_line')}"
-        parts.append(f"## Chapter {item.get('chapter')} ({item.get('source_path')}, {location})\n\n{item['text']}")
-    return "\n\n---\n\n".join(parts), selected
+    return render_context(selected), selected
