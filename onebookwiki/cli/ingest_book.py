@@ -7,8 +7,9 @@ import sys
 from pathlib import Path
 
 from onebookwiki.chunking import chunk_text, chunking_profile
+from onebookwiki.evidence_registry import EvidenceRegistryError, register_project
 from onebookwiki.index import LocalIndex
-from onebookwiki.markdown import metadata, parse_document
+from onebookwiki.markdown import extract_body, metadata, parse_document
 from onebookwiki.providers import ProviderUnavailable, build_embedder
 from onebookwiki.remote_index import CloudVectorIndex
 
@@ -28,8 +29,9 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
     raw_dir = root / "raw" / "chapters"
     if not raw_dir.is_dir():
         raise ValueError(f"no raw/chapters directory under {root}")
-    index = LocalIndex(root)
     index_identity = {"backend": backend, "model": "none"}
+    snapshot = register_project(root)
+    index = LocalIndex(root)
     if index.manifest.embedding_backend != backend:
         index.manifest.embedding_backend = backend
         index.manifest.embedding_model = "none" if backend == "lexical" else "configured"
@@ -45,8 +47,9 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
         relative = path.relative_to(root)
         key = relative.as_posix()
         text = path.read_text(encoding="utf-8")
+        body = extract_body(text)
         digest = index.manifest.chapter_hash(path)
-        chunking = chunking_profile(text)
+        chunking = chunking_profile(body.body)
         known = index.manifest.chapters.get(key)
         if (
             known
@@ -67,6 +70,7 @@ def index_project(root: Path, backend: str = "lexical") -> tuple[int, int, int]:
         added += len(new_ids)
         changed += 1
         print(f"indexed chapter {chapter}: {len(chunks)} chunk(s), {len(old_ids)} replaced")
+    index.manifest.pin_registry(snapshot)
     index.save()
     if removed["paths"]:
         print(f"pruned {len(removed['paths'])} stale raw chapter(s)", file=sys.stderr)
@@ -78,6 +82,7 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
     if not raw_dir.is_dir():
         raise ValueError(f"no raw/chapters directory under {root}")
     embedder = build_embedder(provider)
+    snapshot = register_project(root)
     index = CloudVectorIndex(root, embedder)
     provider_identity = embedder.identity()
     index_identity = {
@@ -99,8 +104,9 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
         relative = path.relative_to(root)
         key = relative.as_posix()
         text = path.read_text(encoding="utf-8")
+        body = extract_body(text)
         digest = index.manifest.chapter_hash(path)
-        chunking = chunking_profile(text)
+        chunking = chunking_profile(body.body)
         known = index.manifest.chapters.get(key)
         if (
             known
@@ -121,6 +127,8 @@ def index_cloud(root: Path, provider: str = "bge-m3") -> tuple[int, int, int]:
         changed += 1
         added += new_count
         print(f"embedded chapter {chapter}: {new_count} chunk(s), {replaced} replaced")
+    index.manifest.pin_registry(snapshot)
+    index.manifest.save(root)
     if removed["paths"]:
         print(f"pruned {len(removed['paths'])} stale raw chapter(s)", file=sys.stderr)
     return changed, added, reused

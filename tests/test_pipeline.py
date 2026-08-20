@@ -30,7 +30,7 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("imported 2 raw chapter file(s)", result.stdout)
             self.assertIn("dry run complete; 4 generation node(s) planned", result.stdout)
-            self.assertIn("[generate] generation plan: 2 chapter node(s) pending", result.stderr)
+            self.assertIn("[generate] provider=none, model=default, retries=4", result.stderr)
             self.assertEqual(len(list((root / "raw" / "chapters").glob("*.md"))), 2)
             self.assertTrue((root / ".onebookwiki" / "manifest.json").is_file())
             self.assertFalse((root / "wiki" / "book.md").is_file())

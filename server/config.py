@@ -59,33 +59,6 @@ class ChatSettings:
         )
 
 
-def agent_policy_snapshot(embedding_backend: str | None = None) -> dict[str, object]:
-    """Return the bounded, non-secret policy captured for a chat conversation."""
-    from onebookwiki.chat_agent import AgentPolicy
-
-    values: dict[str, object] = {
-        "max_actions": os.getenv("ONEBOOKWIKI_CHAT_AGENT_MAX_ACTIONS", AgentPolicy.max_actions),
-        "max_seconds": os.getenv("ONEBOOKWIKI_CHAT_AGENT_MAX_SECONDS", AgentPolicy.max_seconds),
-        "max_observation_tokens": os.getenv("ONEBOOKWIKI_CHAT_AGENT_OBSERVATION_TOKENS", AgentPolicy.max_observation_tokens),
-        "max_planner_output_tokens": os.getenv("ONEBOOKWIKI_CHAT_AGENT_PLANNER_TOKENS", AgentPolicy.max_planner_output_tokens),
-        "max_page_results": os.getenv("ONEBOOKWIKI_CHAT_AGENT_PAGE_RESULTS", AgentPolicy.max_page_results),
-        "max_raw_candidates": os.getenv("ONEBOOKWIKI_CHAT_AGENT_RAW_CANDIDATES", AgentPolicy.max_raw_candidates),
-        "max_evidence": os.getenv("ONEBOOKWIKI_CHAT_AGENT_MAX_EVIDENCE", AgentPolicy.max_evidence),
-        "final_evidence_tokens": os.getenv("ONEBOOKWIKI_CHAT_AGENT_EVIDENCE_TOKENS", AgentPolicy.final_evidence_tokens),
-        "retrieval": os.getenv("ONEBOOKWIKI_CHAT_AGENT_RETRIEVAL", AgentPolicy.retrieval),
-        "embedding_backend": embedding_backend or os.getenv(
-            "ONEBOOKWIKI_CHAT_EMBEDDING_BACKEND", AgentPolicy.embedding_backend
-        ),
-        "json_repairs": os.getenv(
-            "ONEBOOKWIKI_CHAT_AGENT_JSON_REPAIRS", AgentPolicy.json_repairs
-        ),
-        "final_answer_repairs": os.getenv(
-            "ONEBOOKWIKI_CHAT_FINAL_ANSWER_REPAIRS", AgentPolicy.final_answer_repairs
-        ),
-    }
-    return AgentPolicy.from_dict(values).to_dict()
-
-
 def generation_config_hash(snapshot: Mapping[str, object]) -> str:
     """Hash the exact persisted payload, excluding only its hash field."""
     payload = dict(snapshot)
@@ -124,14 +97,12 @@ def generation_snapshot(
     provider: str,
     model: str,
     max_output_tokens: int,
-    agent_policy: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Return a non-secret, stable generation configuration snapshot."""
     value: dict[str, object] = {
         "provider": provider,
         "model": model,
         "max_output_tokens": int(max_output_tokens),
-        "agent_policy": agent_policy or agent_policy_snapshot(),
     }
     value["config_hash"] = generation_config_hash(value)
     return value

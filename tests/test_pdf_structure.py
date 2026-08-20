@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from onebookwiki.chunking import chunk_text
+from onebookwiki.evidence_registry import register_project
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_chapters
 from onebookwiki.importers import import_pdf
 from onebookwiki.index import LocalIndex
@@ -555,6 +556,8 @@ class PdfStructureTest(unittest.TestCase):
             raw.write_text("# Unit\n\n> Chapter: 1\n\n" + "证据。" * 500, encoding="utf-8")
             index = LocalIndex(root)
             index.update(raw.relative_to(root), 1, chunk_text(raw.read_text(encoding="utf-8"), raw.relative_to(root).as_posix(), 1, target_tokens=5000, overlap_tokens=0, max_tokens=5000))
+            index.manifest.pin_registry(register_project(root))
+            index.save()
             with self.assertRaisesRegex(GenerationError, "re-import with a smaller --max-unit-tokens"):
                 generate_chapters(root, GenerationOptions(dry_run=True, max_input_tokens=256))
 

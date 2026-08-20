@@ -73,6 +73,8 @@ def run_pipeline(
                 raise FileNotFoundError(f"No source file found in {source_dir}")
 
             from onebookwiki.importers import ImportOptions, import_document
+            from onebookwiki.evidence_registry import register_project
+            from server.database import publish_registry_snapshot
 
             imported = import_document(source_file, book_dir, ImportOptions())
             if not imported:
@@ -81,6 +83,10 @@ def run_pipeline(
             # Update metadata from source.json
             source_json = book_dir / ".onebookwiki" / "source.json"
             update_from_import(conn, book_id, source_json)
+
+            # Register immutable body-only evidence before any derived generation.
+            registry_snapshot = register_project(book_dir)
+            publish_registry_snapshot(conn, book_id, registry_snapshot)
 
             # Log import success
             ch_count = len(list((book_dir / "raw" / "chapters").glob("*.md")))
@@ -98,21 +104,27 @@ def run_pipeline(
             # ---- Phase 2: Index ----
             db_update_phase(conn, book_id, "indexing")
 
-            # Import the indexing functions from the CLI package
-            from onebookwiki.cli.ingest_book import index_cloud as do_index  # type: ignore[import-not-found]
+            # The server pipeline accepts the same lexical fallback as the CLI.
+            # Semantic backends use embeddings; lexical indexing never does.
+            if backend == "lexical":
+                from onebookwiki.cli.ingest_book import index_project as do_index
+            else:
+                from onebookwiki.cli.ingest_book import index_cloud as do_index
 
             do_index(book_dir, backend)
 
             # Log index success
+            index_kind = "Lexical" if backend == "lexical" else "Vector"
             insert_operation_log(
                 conn, book_id, "index", "success", "indexing",
-                detail=f"Vector index built with backend {backend}",
+                detail=f"{index_kind} index built with backend {backend}",
             )
 
             # ---- Phase 3: Generate ----
             db_update_phase(conn, book_id, "generating")
 
             from onebookwiki.generation import GenerationOptions, resume_generation
+            from onebookwiki.manifest import Manifest
             from onebookwiki.providers import GenerationConfig
 
             gen_config = GenerationConfig.from_env()
@@ -129,7 +141,12 @@ def run_pipeline(
             (book_dir / ".onebookwiki" / "generation-config.json").write_text(
                 json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-            resume_generation(book_dir, options)
+            resume_generation(
+                book_dir,
+                options,
+                knowledge_connection=conn,
+                book_id=book_id,
+            )
 
             # Log generate success
             insert_operation_log(
@@ -140,23 +157,36 @@ def run_pipeline(
             # ---- Phase 4: Render ----
             db_update_phase(conn, book_id, "rendering")
 
-            from onebookwiki.rendering import render_artifacts
             from onebookwiki.providers import build_embedder
+            from onebookwiki.wiki_projection import render_grounded_projection
             from onebookwiki.wiki_vector_index import build_wiki_vector_indexes
 
-            render_artifacts(book_dir)
-            wiki_indexes = build_wiki_vector_indexes(book_dir, build_embedder(backend))
-            snapshot = generation_snapshot(
-                gen_config.provider,
-                gen_config.model,
-                gen_config.max_output_tokens,
-                __import__("server.config", fromlist=["agent_policy_snapshot"]).agent_policy_snapshot(backend),
+            # Publication completed in resume_generation. Read the manifest's
+            # immutable revision pin and require every derived projection to use
+            # that exact revision, rather than whatever happens to be active.
+            manifest = Manifest.load(book_dir)
+            expected_revision_id = str(manifest.book_revision_id or "")
+            if not expected_revision_id:
+                raise RuntimeError("generation manifest has no book revision ID")
+            render_grounded_projection(
+                conn,
+                book_dir,
+                book_id,
+                expected_revision_id=expected_revision_id,
             )
-            (book_dir / ".onebookwiki" / "generation-config.json").write_text(
-                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
+            if backend == "lexical":
+                wiki_indexes = []
+            else:
+                wiki_indexes = build_wiki_vector_indexes(
+                    conn,
+                    book_dir,
+                    book_id,
+                    build_embedder(backend),
+                    expected_revision_id=expected_revision_id,
+                )
 
-            # Update from structure.json
+            # Update render metadata only after both projection and semantic
+            # vector publication have succeeded.
             structure_json = book_dir / "wiki" / "structure.json"
             update_from_render(conn, book_id, structure_json)
 
@@ -168,13 +198,17 @@ def run_pipeline(
                     page_count = len(data.get("pages", []))
                 except Exception:
                     pass
-            index_summary = ", ".join(
-                f"{item.layer}: {item.documents} documents/{item.chunks} chunks"
-                for item in wiki_indexes
+            index_summary = (
+                ", ".join(
+                    f"{item.layer}: {item.documents} documents/{item.chunks} chunks"
+                    for item in wiki_indexes
+                )
+                if wiki_indexes
+                else "semantic vectors skipped (lexical backend)"
             )
             insert_operation_log(
                 conn, book_id, "render", "success", "rendering",
-                detail=f"Rendered {page_count} wiki pages; built wiki vectors ({index_summary})",
+                detail=f"Rendered {page_count} wiki pages; {index_summary}",
             )
 
             # ---- Done ----

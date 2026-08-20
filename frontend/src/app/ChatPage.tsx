@@ -15,8 +15,9 @@ const activeStatuses = new Set(['queued', 'retrieving', 'generating']);
 function dedupeCitations(citations: ChatTurn['citations']): ChatTurn['citations'] {
   const seen = new Set<string>();
   return citations.filter(citation => {
-    if (seen.has(citation.evidence_id)) return false;
-    seen.add(citation.evidence_id);
+    const id = citation.evidence_revision_id || citation.evidence_id;
+    if (seen.has(id)) return false;
+    seen.add(id);
     return true;
   });
 }
@@ -108,12 +109,32 @@ export default function ChatPage({ bookId, conversationId }: Props) {
             {error && <p className="chat-refresh-error" role="alert">{error}</p>}
             <div className="chat-thread">
               {conversation.turns.map(turn => {
-                const turnEvidence = dedupeCitations(turn.citations).map(citation => citationToEvidenceRecord(citation, evidence));
+                const expectedTurnRevisionId = turn.book_revision_id || conversation.book_revision_id || structure.bookRevisionId;
+                const expectedProjectionRevisionId = structure.bookRevisionId;
+                const resolvedEvidence: EvidenceRecord[] = [];
+                let unresolvedCitationCount = 0;
+                dedupeCitations(turn.citations).forEach(citation => {
+                  const record = citationToEvidenceRecord(
+                    citation,
+                    evidence,
+                    expectedTurnRevisionId,
+                    expectedProjectionRevisionId,
+                  );
+                  if (record) resolvedEvidence.push(record);
+                  else unresolvedCitationCount += 1;
+                });
                 return (
                   <article className={`chat-turn chat-turn--${turn.status}`} key={turn.id}>
                     <div className="chat-turn-main">
                       <div className="chat-question"><span className="chat-role">问题 {turn.turn_no}</span><p>{turn.question}</p></div>
                       <div className="chat-answer">
+                        {(turn.answer_mode || turn.pinned_revision_status) && (
+                          <p className="chat-provenance">
+                            {turn.answer_mode && <>模式：{turn.answer_mode}</>}
+                            {turn.answer_mode && turn.pinned_revision_status && ' · '}
+                            {turn.pinned_revision_status && <>知识版本：{turn.pinned_revision_status}</>}
+                          </p>
+                        )}
                         {activeStatuses.has(turn.status) ? (
                           <p className="chat-pending">正在检索书籍证据并生成回答...</p>
                         ) : turn.answer ? (
@@ -125,14 +146,22 @@ export default function ChatPage({ bookId, conversationId }: Props) {
                     </div>
                     <div className="chat-turn-evidence">
                       <span className="chat-turn-evidence-label">证据</span>
-                      {turnEvidence.length > 0 ? turnEvidence.map(record => (
+                      {resolvedEvidence.length > 0 && resolvedEvidence.map(record => (
                         <EvidenceCard
                           key={record.evidence_id}
                           record={record}
                           cardId={record.evidence_id}
                           highlighted={focusedEvidenceId === record.evidence_id}
                         />
-                      )) : <p className="chat-turn-evidence-empty">{activeStatuses.has(turn.status) ? '检索中...' : '此回答暂无引用证据。'}</p>}
+                      ))}
+                      {unresolvedCitationCount > 0 && (
+                        <p className="chat-evidence-unverified" role="alert">
+                          引用不可验证：{unresolvedCitationCount} 条引用无法在当前书籍知识版本中核实，已隐藏其来源详情。
+                        </p>
+                      )}
+                      {resolvedEvidence.length === 0 && unresolvedCitationCount === 0 && (
+                        <p className="chat-turn-evidence-empty">{activeStatuses.has(turn.status) ? '检索中...' : '此回答暂无引用证据。'}</p>
+                      )}
                     </div>
                   </article>
                 );

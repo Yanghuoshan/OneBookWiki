@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,25 @@ class Document:
     header: tuple[str, ...]
     body: tuple[str, ...]
 
+
+@dataclass(frozen=True)
+class BodyExtraction:
+    """Body-only Markdown content with a map back to physical source lines."""
+
+    title: str | None
+    header: tuple[str, ...]
+    body: str
+    source_line_map: tuple[int, ...]
+
+    @property
+    def body_start_line(self) -> int | None:
+        return self.source_line_map[0] if self.source_line_map else None
+
+    @property
+    def body_end_line(self) -> int | None:
+        return self.source_line_map[-1] if self.source_line_map else None
+
+
 @dataclass(frozen=True)
 class Candidate:
     kind: str
@@ -32,6 +52,78 @@ class Candidate:
 
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _canonical_lines(text: str) -> list[str]:
+    """Split text with stable line endings and NFC-normalized characters."""
+    return [unicodedata.normalize("NFC", line) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+
+
+def extract_body(text: str) -> BodyExtraction:
+    """Return Markdown body content while preserving physical source lines.
+
+    Imported chapters put a title and a variable-length blockquote metadata
+    header before the evidence body. Those lines are excluded, but body line
+    numbers remain coordinates in the materialized raw Markdown file.
+    """
+    lines = _canonical_lines(text)
+    title: str | None = None
+    header: list[str] = []
+    body: list[tuple[int, str]] = []
+    state = "before"
+    active: tuple[str, int] | None = None
+
+    for line_number, line in enumerate(lines, 1):
+        if active:
+            body.append((line_number, line))
+            if is_fence_closer(line, *active):
+                active = None
+            continue
+        opener = fence_opener(line)
+        if opener:
+            if state == "after-title":
+                state = "body"
+            if state == "body":
+                body.append((line_number, line))
+                active = opener
+                continue
+            # A fence before the title is not metadata and remains body text.
+            body.append((line_number, line))
+            active = opener
+            continue
+        if state == "before":
+            if line.startswith("# ") and title is None:
+                title, state = line, "after-title"
+            else:
+                body.append((line_number, line))
+        elif state == "after-title":
+            if not line.strip():
+                continue
+            if METADATA_RE.match(line.strip()):
+                header.append(line)
+                state = "header"
+            else:
+                body.append((line_number, line))
+                state = "body"
+        elif state == "header":
+            if METADATA_RE.match(line.strip()):
+                header.append(line)
+            else:
+                body.append((line_number, line))
+                state = "body"
+        else:
+            body.append((line_number, line))
+
+    while body and not body[0][1].strip():
+        body.pop(0)
+    while body and not body[-1][1].strip():
+        body.pop()
+    return BodyExtraction(
+        title=title,
+        header=tuple(header),
+        body="\n".join(line for _, line in body),
+        source_line_map=tuple(line_number for line_number, _ in body),
+    )
 
 
 def fence_opener(line: str) -> tuple[str, int] | None:
@@ -207,7 +299,8 @@ def contains(haystack: str, candidate: Candidate) -> bool:
 
 
 def source_content(path: Path) -> str:
-    return normalize("\n".join(parse_document(path.read_text(encoding="utf-8")).body))
+    """Return normalized source prose without title or metadata headers."""
+    return normalize(extract_body(path.read_text(encoding="utf-8")).body)
 
 
 def sha256_text(text: str) -> str:

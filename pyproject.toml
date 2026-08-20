@@ -27,10 +27,8 @@ onebookwiki-generate = "onebookwiki.cli.generate_wiki:main"
 onebookwiki-ingest = "onebookwiki.cli.ingest_book:main"
 onebookwiki-ingest-epub = "onebookwiki.cli.ingest_epub:main"
 onebookwiki-ingest-pdf = "onebookwiki.cli.ingest_pdf:main"
-onebookwiki-query = "onebookwiki.cli.query_book:main"
-onebookwiki-chat = "onebookwiki.cli.chat_book:main"
 onebookwiki-check = "onebookwiki.cli.check_book:main"
 onebookwiki-cost = "onebookwiki.cli.report_cost:main"
 
 [tool.setuptools.packages.find]
-include = ["onebookwiki*"]
+include = ["onebookwiki*", "server*"]

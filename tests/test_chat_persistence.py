@@ -1,11 +1,14 @@
+from __future__ import annotations
+
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from onebookwiki.chat_agent import AgentTraceEvent
 from server.database import (
     append_chat_agent_step,
     append_chat_turn,
@@ -22,6 +25,22 @@ from server.database import (
 )
 
 
+@dataclass(frozen=True)
+class _FakeTraceEvent:
+    """Minimal step record shape append_chat_agent_step expects, for persistence tests."""
+
+    step_no: int
+    phase: str
+    action: str
+    status: str = "completed"
+    request: dict[str, Any] = field(default_factory=dict)
+    result: dict[str, Any] = field(default_factory=dict)
+    error_code: str | None = None
+    prompt_hash: str | None = None
+    provider_request_id: str | None = None
+    usage: dict[str, int] | None = None
+
+
 class ChatPersistenceTest(unittest.TestCase):
     generation = {
         "provider": "test-provider",
@@ -29,6 +48,7 @@ class ChatPersistenceTest(unittest.TestCase):
         "max_output_tokens": 1800,
         "config_hash": "test-config-hash",
     }
+    book_revision_id = "book-test0000000000000000000000"
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -40,7 +60,9 @@ class ChatPersistenceTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def create_conversation(self):
-        return create_chat_conversation(self.conn, self.book_id, "What is the thesis?", self.generation)
+        return create_chat_conversation(
+            self.conn, self.book_id, "What is the thesis?", self.generation, self.book_revision_id
+        )
 
     def test_create_and_complete_conversation(self):
         conversation_id, turn_id = self.create_conversation()
@@ -126,7 +148,7 @@ class ChatPersistenceTest(unittest.TestCase):
     def test_agent_trace_is_attempt_scoped_and_requires_ownership(self):
         _, turn_id = self.create_conversation()
         job = claim_chat_job(self.conn, "worker-a", 60)
-        event = AgentTraceEvent(
+        event = _FakeTraceEvent(
             step_no=1, phase="retrieving", action="book_overview",
             request={"arguments": {}}, result={"title": "Test"}, prompt_hash="abc",
             usage={"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},

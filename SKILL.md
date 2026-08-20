@@ -12,7 +12,7 @@ Maintain a structured interpretation of one book. The human chooses the book and
 - `raw/chapters/` is immutable source text. Never silently rewrite an imported chapter.
 - `wiki/` is compiled interpretation: `book.md`, `index.md`, ordered `chapters/`, and optional `themes/`, `concepts/`, `arguments/`, and `review/`.
 - `.onebookwiki/` is derived retrieval state: manifest, hashes, chunks, and optional vectors. It may be rebuilt.
-- Use `scripts/ingest_book.py` to index chapters incrementally, `scripts/query_book.py` to retrieve bounded evidence, and `scripts/check_book.py` to report structure/evidence/index health.
+- Use `scripts/ingest_book.py` to index chapters incrementally, and `scripts/check_book.py` to report structure/evidence/index health. Retrieval and chat run through the FastAPI service (`server/chat_worker.py`), not a standalone query CLI.
 
 ## Grounding invariant
 
@@ -30,7 +30,7 @@ Do not summarize every chunk by default. Summarize at chapter/section level only
 
 ## Query and Review
 
-Read `wiki/index.md` and search compiled pages first. Use semantic/lexical retrieval over `.onebookwiki/` only for missing evidence or raw text. Use `query_book.py` with a hard context budget, a small top-k, per-chapter quotas, and duplicate removal. For semantic coverage, `--retrieval hybrid` fuses lexical and vector candidates and applies deterministic local reranking before context assembly. Default queries are read-only and may run with `--retrieval-only` without any LLM tokens. `--generate` sends only the bounded evidence to an OpenAI-compatible generation endpoint; `--max-tokens` limits evidence and `--max-output-tokens` limits the answer separately. Cite chapter and line/page/location metadata, and state when evidence is insufficient. A saved review or archive is an explicit write operation and must be logged.
+Read `wiki/index.md` and search compiled pages first. Use semantic/lexical retrieval over `.onebookwiki/` only for missing evidence or raw text. Query and chat run through the FastAPI service: retrieval is read-only and requires no LLM tokens, while chat answers are grounded exclusively in the pinned Grounded v2 book revision (immutable `onebookwiki://evidence/evr-...` citations only) and refuse rather than answer when pinned evidence is insufficient. Cite chapter and line/page/location metadata, and state when evidence is insufficient. A saved review or archive is an explicit write operation and must be logged.
 
 Never pass the entire book or unbounded conversation history to a model. For broad questions, retrieve chapter candidates first and expand only the relevant chapters. Deep research is opt-in and has a fixed iteration/context ceiling.
 

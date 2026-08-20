@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import re
 
-from .markdown import sha256_text
+from .markdown import BodyExtraction, extract_body, sha256_text
 
 CJK_RE = re.compile(r"[⺀-⿿　-〿㐀-䶿一-鿿豈-﫿]")
 SENTENCE_RE = re.compile(r"(?<=[。！？；!?;])\s*|\n+")
@@ -149,6 +149,26 @@ def _section_blocks(text: str) -> list[tuple[int, int, str, str]]:
     if not blocks:
         blocks = [(start, end, current_section, body) for start, end, body in _paragraphs(lines)]
     return blocks
+
+
+def _physical_blocks(extraction: BodyExtraction) -> tuple[str, list[tuple[int, int, str, str]]]:
+    """Chunk body-local blocks while retaining raw Markdown line coordinates."""
+    blocks = _section_blocks(extraction.body)
+    mapped: list[tuple[int, int, str, str]] = []
+    for start, end, section, body in blocks:
+        if not extraction.source_line_map:
+            continue
+        local_start = min(max(start, 1), len(extraction.source_line_map))
+        local_end = min(max(end, local_start), len(extraction.source_line_map))
+        mapped.append(
+            (
+                extraction.source_line_map[local_start - 1],
+                extraction.source_line_map[local_end - 1],
+                section,
+                body,
+            )
+        )
+    return extraction.body, mapped
 
 
 def _units(text: str, cjk: bool, max_tokens: int) -> list[str]:
@@ -297,8 +317,10 @@ def chunk_text(
     Explicit token arguments take precedence. The defaults are 150/25/200 for
     CJK documents and 200/30/250 for Latin documents.
     """
+    extraction = extract_body(text)
+    body_text, blocks = _physical_blocks(extraction)
     profile = chunking_profile(
-        text,
+        body_text,
         target_words,
         overlap_words,
         target_tokens=target_tokens,
@@ -311,7 +333,7 @@ def chunk_text(
     maximum = int(profile["max_tokens"])
 
     units: list[tuple[int, int, str, str]] = []
-    for start, end, section, body in _section_blocks(text):
+    for start, end, section, body in blocks:
         units.extend(_split_block(start, end, section, body, cjk, maximum))
 
     grouped: list[Chunk] = []

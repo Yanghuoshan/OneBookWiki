@@ -8,7 +8,7 @@ from onebookwiki.providers import (
     LocalBgeM3Config,
     LocalBgeM3Embedder,
     ProviderUnavailable,
-    build_grounded_prompt,
+    build_answer_plan_prompt,
     generate,
     generate_response,
 )
@@ -35,11 +35,26 @@ class FakeOpenAI:
 
 
 class ProviderTest(unittest.TestCase):
-    def test_grounded_prompt_delimits_evidence_and_requires_uncertainty(self):
-        prompt = build_grounded_prompt("What is the claim?", "## Chapter 1 (raw.md, lines 2-3)\n\nEvidence")
-        self.assertIn("BEGIN RETRIEVED EVIDENCE", prompt)
-        self.assertIn("do not invent facts", prompt)
-        self.assertIn("Chapter 1", prompt)
+    def test_answer_plan_prompt_pins_statements_and_evidence_allowlists(self):
+        prompt = build_answer_plan_prompt(
+            "What is the claim?",
+            "knowledge_synthesis",
+            [{
+                "statement_revision_id": "str-1",
+                "semantic_text": "Grounded claims require original evidence.",
+                "evidence_revision_ids": ["evr-1"],
+            }],
+            {"evr-1": "Grounded claims require original evidence."},
+        )
+        self.assertIn("BEGIN PINNED KNOWLEDGE AND EVIDENCE", prompt)
+        self.assertIn("Do not invent facts", prompt)
+        self.assertIn("str-1", prompt)
+        self.assertIn("ALLOWED evidence_revision_ids: evr-1", prompt)
+        self.assertIn('"segments"', prompt)
+
+    def test_answer_plan_prompt_rejects_canonical_passthrough_mode(self):
+        with self.assertRaises(ValueError):
+            build_answer_plan_prompt("q", "canonical_passthrough", [], {})
 
     def test_generate_uses_configured_model_and_output_budget(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=True), patch(

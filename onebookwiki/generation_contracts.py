@@ -1,4 +1,4 @@
-"""Strict contracts for newly generated chapter, rollup, and book payloads."""
+"""Strict Grounded v2 draft contracts for model-owned generation output."""
 from __future__ import annotations
 
 import json
@@ -7,60 +7,92 @@ from typing import Any, Iterable, Mapping
 
 
 class ContractError(ValueError):
-    """A generated payload does not satisfy its stage contract."""
+    """A generated Grounded v2 draft does not satisfy its contract."""
 
 
-EVIDENCE_ID_RE = re.compile(r"^C[1-9]\d*E[1-9]\d*$")
+CONTRACT_VERSION = "grounded-v2"
+EVIDENCE_REVISION_ID_RE = re.compile(r"^evr-[0-9a-f]{32}$")
+DRAFT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 CONFIDENCE_VALUES = {"high", "medium", "low"}
-CLAIM_KEYS = {"text", "evidence_ids"}
-CONFIDENT_CLAIM_KEYS = CLAIM_KEYS | {"confidence"}
+STATEMENT_KINDS = {
+    "factual",
+    "definitional",
+    "causal",
+    "comparative",
+    "interpretive",
+    "normative",
+    "attribution",
+    "quotation",
+}
+SUPPORT_TYPES = {"positive", "negative", "qualifying", "attribution", "quotation"}
+DOCUMENTARY_SCOPES = {"span", "section", "reading_unit", "rollup", "book"}
+TARGET_TYPES = {"book", "chapter", "entity", "statement", "evidence"}
+ABSTRACTIONS = {"concrete_detail", "local_generalization", "cross_scope_synthesis"}
+COMPOSITION_KINDS = {
+    "purpose",
+    "summary",
+    "thesis",
+    "argument_map",
+    "concept_profile",
+    "overview",
+    "core_thesis",
+    "argument_chain",
+    "chapter_summary",
+    "rollup",
+}
 
+STATEMENT_SCHEMA: dict[str, Any] = {
+    "draft_id": "string",
+    "canonical_key": "string",
+    "kind": "factual|definitional|causal|comparative|interpretive|normative|attribution|quotation",
+    "subject": "string",
+    "truth_condition": "string",
+    "scope": {
+        "documentary_scope": "span|section|reading_unit|rollup|book",
+        "target_type": "book|chapter|entity|statement|evidence",
+        "chapter": "integer|null",
+    },
+    "abstraction": "concrete_detail|local_generalization|cross_scope_synthesis",
+    "qualification": "string|null",
+    "confidence": "high|medium|low",
+    "supports": [{
+        "evidence_revision_id": "evr-<32 lowercase hex>",
+        "support_type": "positive|negative|qualifying|attribution|quotation",
+        "quote": "exact evidence body",
+        "span_map": {"source_line_start": "integer", "source_line_end": "integer"},
+    }],
+}
+COMPOSITION_SCHEMA: dict[str, Any] = {
+    "draft_id": "string",
+    "canonical_key": "string",
+    "kind": "purpose|summary|thesis|argument_map|concept_profile|overview|core_thesis|argument_chain|chapter_summary|rollup",
+    "members": [{
+        "member_type": "statement|composition",
+        "draft_id": "string",
+        "role": "string",
+    }],
+    "rendering": {"text": "string", "span_map": "object"},
+}
 CHAPTER_SCHEMA: dict[str, Any] = {
-    "purpose": "string",
-    "executive_summary": "string",
-    "core_thesis": "string",
-    "argument_map": "string",
-    "key_concepts": ["string"],
-    "observations": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "quotations": [{"text": "exact quote", "evidence_ids": ["CnEn"]}],
-    "relation_to_previous": "string",
-    "relation_to_following": "string",
-    "cross_chapter_connections": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "open_questions": ["string"],
-    "review_questions": ["string"],
-    "claims": [{"text": "string", "evidence_ids": ["CnEn"], "confidence": "high|medium|low"}],
+    "statements": [STATEMENT_SCHEMA],
+    "compositions": [COMPOSITION_SCHEMA],
 }
 ROLLUP_SCHEMA: dict[str, Any] = {
-    "summary": "string",
-    "themes": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "concepts": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "arguments": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "tensions": [{"text": "string", "evidence_ids": ["CnEn"]}],
+    "statements": [STATEMENT_SCHEMA],
+    "compositions": [COMPOSITION_SCHEMA],
 }
 BOOK_SCHEMA: dict[str, Any] = {
-    "overview": "string",
-    "core_thesis": "string",
-    "argument_chain": "string",
-    "themes": [{"text": "string", "evidence_ids": ["CnEn"], "kind": "interpretation", "confidence": "high|medium|low"}],
-    "concepts": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "arguments": [{"text": "string", "evidence_ids": ["CnEn"]}],
-    "terminology": ["string"],
-    "unresolved_questions": ["string"],
-    "chapter_summaries": {"chapter-number": "string"},
+    "statements": [STATEMENT_SCHEMA],
+    "compositions": [COMPOSITION_SCHEMA],
 }
 
 
 def schema_for(stage: str, chapter: int | None = None) -> dict[str, Any]:
-    """Return the model-owned schema rendered in prompts."""
+    """Return a JSON-safe copy of the model-owned v2 draft schema."""
     schema = {"chapter": CHAPTER_SCHEMA, "rollup": ROLLUP_SCHEMA, "book": BOOK_SCHEMA}.get(stage)
     if schema is None:
         raise ContractError(f"unknown structured stage: {stage}")
-    rendered = json.loads(json.dumps(schema))
-    if stage == "chapter" and chapter is not None:
-        marker = f"C{chapter}E1"
-        for key in ("observations", "quotations", "cross_chapter_connections", "claims"):
-            rendered[key][0]["evidence_ids"] = [marker]
-    return rendered
+    return json.loads(json.dumps(schema, ensure_ascii=False))
 
 
 def _pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -103,10 +135,30 @@ def _exact_keys(value: Mapping[str, Any], expected: Iterable[str], path: str) ->
         raise ContractError(f"{path} has invalid keys ({', '.join(details)})")
 
 
+def _object(value: Any, path: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ContractError(f"{path} must be an object")
+    return dict(value)
+
+
 def _string(value: Any, path: str, *, nonempty: bool = False) -> str:
     if not isinstance(value, str) or (nonempty and not value.strip()):
         requirement = "non-empty string" if nonempty else "string"
         raise ContractError(f"{path} must be a {requirement}")
+    return value
+
+
+def _nullable_string(value: Any, path: str) -> str | None:
+    if value is None:
+        return None
+    return _string(value, path, nonempty=True)
+
+
+def _integer_or_null(value: Any, path: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ContractError(f"{path} must be a positive integer or null")
     return value
 
 
@@ -115,155 +167,320 @@ def _string_list(value: Any, path: str) -> list[str]:
         raise ContractError(f"{path} must be an array")
     for index, item in enumerate(value):
         _string(item, f"{path}[{index}]", nonempty=True)
-    return value
+    return [str(item) for item in value]
 
 
-def _claim(
+def _span_map(value: Any, path: str) -> dict[str, int]:
+    span = _object(value, path)
+    _exact_keys(span, {"source_line_start", "source_line_end"}, path)
+    start = _integer_or_null(span["source_line_start"], f"{path}.source_line_start")
+    end = _integer_or_null(span["source_line_end"], f"{path}.source_line_end")
+    if start is None or end is None or end < start:
+        raise ContractError(f"{path} line range is invalid")
+    return {"source_line_start": start, "source_line_end": end}
+
+
+def _allowed_evidence_ids(
+    chunks: Iterable[Mapping[str, Any]] | None,
+    evidence: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None,
+) -> tuple[set[str], dict[str, Any]]:
+    records: dict[str, Any] = {}
+    if isinstance(evidence, Mapping):
+        records.update({str(key): value for key, value in evidence.items()})
+    elif evidence is not None:
+        for item in evidence:
+            if isinstance(item, Mapping):
+                identifier = item.get("evidence_revision_id")
+                if isinstance(identifier, str):
+                    records[identifier] = item
+    if chunks is not None:
+        for item in chunks:
+            identifier = item.get("evidence_revision_id")
+            if isinstance(identifier, str):
+                records.setdefault(identifier, item)
+    return set(records), records
+
+
+def validate_support(
     value: Any,
     path: str,
-    allowed_ids: set[str],
     *,
-    confidence: bool = False,
-    kind: bool = False,
-) -> set[str]:
-    if not isinstance(value, dict):
-        raise ContractError(f"{path} must be an object")
-    expected = set(CONFIDENT_CLAIM_KEYS if confidence else CLAIM_KEYS)
-    if kind:
-        expected.add("kind")
-    _exact_keys(value, expected, path)
-    _string(value["text"], f"{path}.text", nonempty=True)
-    ids = _string_list(value["evidence_ids"], f"{path}.evidence_ids")
-    if not ids:
-        raise ContractError(f"{path}.evidence_ids must contain at least one canonical ID")
-    result: set[str] = set()
-    for evidence_id in ids:
-        if not EVIDENCE_ID_RE.fullmatch(evidence_id):
-            raise ContractError(f"{path} has malformed evidence ID: {evidence_id}")
-        if evidence_id not in allowed_ids:
-            raise ContractError(f"{path} has unavailable evidence ID: {evidence_id}")
-        result.add(evidence_id)
-    if confidence and value["confidence"] not in CONFIDENCE_VALUES:
-        raise ContractError(f"{path}.confidence must be high, medium, or low")
-    if kind and value["kind"] != "interpretation":
-        raise ContractError(f"{path}.kind must be interpretation")
-    return result
+    allowed_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    item = _object(value, path)
+    _exact_keys(item, {"evidence_revision_id", "support_type", "quote", "span_map"}, path)
+    evidence_id = _string(item["evidence_revision_id"], f"{path}.evidence_revision_id", nonempty=True)
+    if not EVIDENCE_REVISION_ID_RE.fullmatch(evidence_id):
+        raise ContractError(f"{path}.evidence_revision_id is not a Grounded v2 evidence revision")
+    record = allowed_evidence.get(evidence_id)
+    if record is None:
+        raise ContractError(f"{path} references unavailable evidence revision")
+    support_type = _string(item["support_type"], f"{path}.support_type", nonempty=True)
+    if support_type not in SUPPORT_TYPES:
+        raise ContractError(f"{path}.support_type is not controlled")
+    quote = _string(item["quote"], f"{path}.quote", nonempty=True)
+    expected_quote = record.get("quote") if isinstance(record, Mapping) else None
+    if expected_quote is None:
+        expected_quote = record.get("body") if isinstance(record, Mapping) else None
+    if not isinstance(expected_quote, str) or quote != expected_quote:
+        raise ContractError(f"{path}.quote must exactly match the fixed evidence body")
+    span = _span_map(item["span_map"], f"{path}.span_map")
+    start = record.get("source_line_start") if isinstance(record, Mapping) else None
+    end = record.get("source_line_end") if isinstance(record, Mapping) else None
+    if start is not None and (span["source_line_start"] < int(start) or span["source_line_end"] > int(end)):
+        raise ContractError(f"{path}.span_map is outside the evidence revision")
+    return {
+        "evidence_revision_id": evidence_id,
+        "support_type": support_type,
+        "quote": quote,
+        "span_map": span,
+    }
 
 
-def _claim_list(
+def validate_statement_draft(
     value: Any,
-    path: str,
-    allowed_ids: set[str],
+    path: str = "statement",
     *,
-    confidence: bool = False,
-    kind: bool = False,
-) -> set[str]:
-    if not isinstance(value, list):
-        raise ContractError(f"{path} must be an array")
-    ids: set[str] = set()
-    for index, item in enumerate(value):
-        ids.update(_claim(item, f"{path}[{index}]", allowed_ids, confidence=confidence, kind=kind))
-    return ids
+    allowed_evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    item = _object(value, path)
+    _exact_keys(item, {
+        "draft_id", "canonical_key", "kind", "subject", "truth_condition", "scope",
+        "abstraction", "qualification", "confidence", "supports",
+    }, path)
+    draft_id = _string(item["draft_id"], f"{path}.draft_id", nonempty=True)
+    if not DRAFT_ID_RE.fullmatch(draft_id):
+        raise ContractError(f"{path}.draft_id has invalid format")
+    canonical_key = _string(item["canonical_key"], f"{path}.canonical_key", nonempty=True)
+    kind = _string(item["kind"], f"{path}.kind", nonempty=True)
+    if kind not in STATEMENT_KINDS:
+        raise ContractError(f"{path}.kind is not controlled")
+    subject = _string(item["subject"], f"{path}.subject", nonempty=True)
+    truth_condition = _string(item["truth_condition"], f"{path}.truth_condition", nonempty=True)
+    if truth_condition.endswith(("。", ".", "!", "！", "?", "？")) is False:
+        raise ContractError(f"{path}.truth_condition must be a complete proposition")
+    scope = _object(item["scope"], f"{path}.scope")
+    _exact_keys(scope, {"documentary_scope", "target_type", "chapter"}, f"{path}.scope")
+    documentary_scope = _string(scope["documentary_scope"], f"{path}.scope.documentary_scope", nonempty=True)
+    target_type = _string(scope["target_type"], f"{path}.scope.target_type", nonempty=True)
+    if documentary_scope not in DOCUMENTARY_SCOPES:
+        raise ContractError(f"{path}.scope.documentary_scope is not controlled")
+    if target_type not in TARGET_TYPES:
+        raise ContractError(f"{path}.scope.target_type is not controlled")
+    chapter = _integer_or_null(scope["chapter"], f"{path}.scope.chapter")
+    if documentary_scope in {"span", "section", "reading_unit"} and chapter is None:
+        raise ContractError(f"{path}.scope.chapter is required for local scope")
+    abstraction = _string(item["abstraction"], f"{path}.abstraction", nonempty=True)
+    if abstraction not in ABSTRACTIONS:
+        raise ContractError(f"{path}.abstraction is not controlled")
+    qualification = _nullable_string(item["qualification"], f"{path}.qualification")
+    confidence = _string(item["confidence"], f"{path}.confidence", nonempty=True)
+    if confidence not in CONFIDENCE_VALUES:
+        raise ContractError(f"{path}.confidence is not controlled")
+    supports = item["supports"]
+    if not isinstance(supports, list) or not supports:
+        raise ContractError(f"{path}.supports must contain at least one support")
+    evidence = allowed_evidence or {}
+    normalized_supports = [
+        validate_support(support, f"{path}.supports[{index}]", allowed_evidence=evidence)
+        for index, support in enumerate(supports)
+    ]
+    if not any(support["support_type"] == "positive" for support in normalized_supports):
+        raise ContractError(f"{path} has no positive evidence closure")
+    return {
+        "draft_id": draft_id,
+        "canonical_key": canonical_key,
+        "kind": kind,
+        "subject": subject,
+        "truth_condition": truth_condition,
+        "scope": {"documentary_scope": documentary_scope, "target_type": target_type, "chapter": chapter},
+        "abstraction": abstraction,
+        "qualification": qualification,
+        "confidence": confidence,
+        "supports": normalized_supports,
+    }
 
 
-def _normalized(text: str) -> str:
-    return " ".join(text.split())
+def validate_composition_draft(
+    value: Any,
+    path: str = "composition",
+    *,
+    statement_ids: set[str],
+    composition_ids: set[str] | None = None,
+    upstream_statement_ids: set[str] | None = None,
+    upstream_composition_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    item = _object(value, path)
+    _exact_keys(item, {"draft_id", "canonical_key", "kind", "members", "rendering"}, path)
+    draft_id = _string(item["draft_id"], f"{path}.draft_id", nonempty=True)
+    if not DRAFT_ID_RE.fullmatch(draft_id):
+        raise ContractError(f"{path}.draft_id has invalid format")
+    canonical_key = _string(item["canonical_key"], f"{path}.canonical_key", nonempty=True)
+    kind = _string(item["kind"], f"{path}.kind", nonempty=True)
+    if kind not in COMPOSITION_KINDS:
+        raise ContractError(f"{path}.kind is not controlled")
+    members = item["members"]
+    if not isinstance(members, list) or not members:
+        raise ContractError(f"{path}.members must contain at least one member")
+    normalized_members: list[dict[str, str]] = []
+    known_compositions = composition_ids or set()
+    for index, member in enumerate(members):
+        value_member = _object(member, f"{path}.members[{index}]")
+        _exact_keys(value_member, {"member_type", "draft_id", "role"}, f"{path}.members[{index}]")
+        member_type = _string(value_member["member_type"], f"{path}.members[{index}].member_type", nonempty=True)
+        member_id = _string(value_member["draft_id"], f"{path}.members[{index}].draft_id", nonempty=True)
+        role = _string(value_member["role"], f"{path}.members[{index}].role", nonempty=True)
+        known_statements = statement_ids | (upstream_statement_ids or set())
+        known_compositions = known_compositions | (upstream_composition_ids or set())
+        if member_type == "statement" and member_id not in known_statements:
+            raise ContractError(f"{path}.members[{index}] references unknown statement draft")
+        if member_type == "composition" and member_id not in known_compositions:
+            raise ContractError(f"{path}.members[{index}] references unknown composition draft")
+        if member_type not in {"statement", "composition"}:
+            raise ContractError(f"{path}.members[{index}].member_type is not controlled")
+        normalized_members.append({"member_type": member_type, "draft_id": member_id, "role": role})
+    rendering = item["rendering"]
+    normalized_rendering: dict[str, Any] | None = None
+    if rendering is not None:
+        value_rendering = _object(rendering, f"{path}.rendering")
+        _exact_keys(value_rendering, {"text", "span_map"}, f"{path}.rendering")
+        normalized_rendering = {
+            "text": _string(value_rendering["text"], f"{path}.rendering.text", nonempty=True),
+            "span_map": _object(value_rendering["span_map"], f"{path}.rendering.span_map"),
+        }
+    return {
+        "draft_id": draft_id,
+        "canonical_key": canonical_key,
+        "kind": kind,
+        "members": normalized_members,
+        "rendering": normalized_rendering,
+    }
+
+
+def validate_grounded_payload(
+    value: Any,
+    *,
+    stage: str,
+    allowed_evidence: Mapping[str, Any],
+    upstream_statement_ids: set[str] | None = None,
+    upstream_composition_ids: set[str] | None = None,
+) -> tuple[dict[str, Any], set[str]]:
+    """Validate a complete stage draft and return normalized payload plus IDs."""
+    item = _object(value, stage)
+    _exact_keys(item, {"statements", "compositions"}, stage)
+    statements_raw = item["statements"]
+    compositions_raw = item["compositions"]
+    if not isinstance(statements_raw, list) or not isinstance(compositions_raw, list):
+        raise ContractError(f"{stage}.statements and {stage}.compositions must be arrays")
+    statements: list[dict[str, Any]] = []
+    statement_ids: set[str] = set()
+    evidence_ids: set[str] = set()
+    for index, statement in enumerate(statements_raw):
+        normalized = validate_statement_draft(statement, f"{stage}.statements[{index}]", allowed_evidence=allowed_evidence)
+        if normalized["draft_id"] in statement_ids:
+            raise ContractError(f"duplicate statement draft_id: {normalized['draft_id']}")
+        statement_ids.add(normalized["draft_id"])
+        evidence_ids.update(item["evidence_revision_id"] for item in normalized["supports"])
+        statements.append(normalized)
+    compositions: list[dict[str, Any]] = []
+    composition_ids: set[str] = set()
+    for index, composition in enumerate(compositions_raw):
+        normalized = validate_composition_draft(
+            composition,
+            f"{stage}.compositions[{index}]",
+            statement_ids=statement_ids,
+            composition_ids=composition_ids,
+            upstream_statement_ids=upstream_statement_ids,
+            upstream_composition_ids=upstream_composition_ids,
+        )
+        if normalized["draft_id"] in composition_ids:
+            raise ContractError(f"duplicate composition draft_id: {normalized['draft_id']}")
+        composition_ids.add(normalized["draft_id"])
+        compositions.append(normalized)
+    if not statements and not compositions:
+        raise ContractError(f"{stage} draft must contain a statement or composition")
+    return {"statements": statements, "compositions": compositions}, evidence_ids
 
 
 def validate_chapter_payload(
     value: dict[str, Any],
     *,
     chapter: int,
-    chunks: list[dict[str, Any]],
+    chunks: list[dict[str, Any]] | None = None,
+    evidence: Mapping[str, Any] | Iterable[Mapping[str, Any]] | None = None,
 ) -> set[str]:
-    """Validate one model-owned chapter payload and its quotations."""
-    _exact_keys(value, CHAPTER_SCHEMA, "chapter")
-    for key in ("purpose", "executive_summary", "core_thesis", "argument_map", "relation_to_previous", "relation_to_following"):
-        _string(value[key], f"chapter.{key}")
-    for key in ("key_concepts", "open_questions", "review_questions"):
-        _string_list(value[key], f"chapter.{key}")
-    allowed = {f"C{chapter}E{index}" for index in range(1, len(chunks) + 1)}
-    ids: set[str] = set()
-    ids.update(_claim_list(value["observations"], "chapter.observations", allowed))
-    ids.update(_claim_list(value["cross_chapter_connections"], "chapter.cross_chapter_connections", allowed))
-    ids.update(_claim_list(value["claims"], "chapter.claims", allowed, confidence=True))
-    ids.update(_claim_list(value["quotations"], "chapter.quotations", allowed))
-    by_id = {f"C{chapter}E{index}": str(chunk.get("text", "")) for index, chunk in enumerate(chunks, 1)}
-    for index, quote in enumerate(value["quotations"]):
-        quoted = _normalized(quote["text"])
-        if not any(quoted and quoted in _normalized(by_id[evidence_id]) for evidence_id in quote["evidence_ids"]):
-            raise ContractError(f"chapter.quotations[{index}] is not present in its cited source text")
-    return ids
+    """Validate a chapter draft; old CnEn and free-text payloads are rejected."""
+    allowed_ids, records = _allowed_evidence_ids(chunks, evidence)
+    if not allowed_ids:
+        raise ContractError("chapter has no pinned evidence_revision allowlist")
+    normalized, evidence_ids = validate_grounded_payload(value, stage="chapter", allowed_evidence=records)
+    for statement in normalized["statements"]:
+        scope = statement["scope"]
+        if scope["chapter"] is not None and scope["chapter"] != chapter:
+            raise ContractError("chapter statement scope does not match the chapter")
+    return evidence_ids
 
 
-def validate_rollup_payload(value: dict[str, Any], *, allowed_ids: set[str]) -> set[str]:
-    _exact_keys(value, ROLLUP_SCHEMA, "rollup")
-    _string(value["summary"], "rollup.summary")
-    ids: set[str] = set()
-    for key in ("themes", "concepts", "arguments", "tensions"):
-        ids.update(_claim_list(value[key], f"rollup.{key}", allowed_ids))
-    return ids
+def validate_rollup_payload(
+    value: dict[str, Any],
+    *,
+    allowed_ids: set[str] | None = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> set[str]:
+    """Validate a rollup draft against a fixed evidence revision allowlist."""
+    records = evidence or {identifier: {"evidence_revision_id": identifier, "quote": "", "source_line_start": 1, "source_line_end": 1} for identifier in (allowed_ids or set())}
+    # A rollup still requires exact quotes; callers must provide records for real validation.
+    if not evidence:
+        raise ContractError("rollup requires fixed evidence revision records")
+    _, evidence_ids = validate_grounded_payload(value, stage="rollup", allowed_evidence=records)
+    if allowed_ids is not None and not evidence_ids.issubset(allowed_ids):
+        raise ContractError("rollup references evidence outside its fixed allowlist")
+    return evidence_ids
 
 
 def validate_book_payload(
     value: dict[str, Any],
     *,
-    allowed_ids: set[str],
-    chapters: set[int],
+    allowed_ids: set[str] | None = None,
+    chapters: set[int] | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> set[str]:
-    _exact_keys(value, BOOK_SCHEMA, "book")
-    for key in ("overview", "core_thesis", "argument_chain"):
-        _string(value[key], f"book.{key}")
-    for key in ("terminology", "unresolved_questions"):
-        _string_list(value[key], f"book.{key}")
-    ids: set[str] = set()
-    ids.update(_claim_list(value["themes"], "book.themes", allowed_ids, confidence=True, kind=True))
-    ids.update(_claim_list(value["concepts"], "book.concepts", allowed_ids))
-    ids.update(_claim_list(value["arguments"], "book.arguments", allowed_ids))
-    summaries = value["chapter_summaries"]
-    if not isinstance(summaries, dict):
-        raise ContractError("book.chapter_summaries must be an object/map")
-    actual: set[int] = set()
-    for key, summary in summaries.items():
-        if not isinstance(key, str) or not key.isdigit() or int(key) < 1:
-            raise ContractError(f"invalid chapter_summaries key: {key}")
-        actual.add(int(key))
-        _string(summary, f"book.chapter_summaries.{key}", nonempty=True)
-    if actual != chapters:
-        raise ContractError(f"book.chapter_summaries must cover exactly {sorted(chapters)}")
-    return ids
+    """Validate a book draft; compositions must be supported by local draft nodes."""
+    if not evidence:
+        raise ContractError("book requires fixed evidence revision records")
+    _, evidence_ids = validate_grounded_payload(value, stage="book", allowed_evidence=evidence)
+    if allowed_ids is not None and not evidence_ids.issubset(allowed_ids):
+        raise ContractError("book references evidence outside its fixed allowlist")
+    return evidence_ids
 
 
 def collect_prompt_evidence_ids(items: Iterable[Mapping[str, Any]]) -> set[str]:
-    """Collect the canonical IDs that prompts expose from input evidence blocks."""
+    """Collect only Grounded v2 evidence revision IDs recursively."""
     result: set[str] = set()
-    for item in items:
-        evidence = item.get("evidence", [])
-        if not isinstance(evidence, list):
-            continue
-        for record in evidence:
-            if not isinstance(record, Mapping):
-                continue
-            direct = record.get("evidence_id")
-            if isinstance(direct, str) and EVIDENCE_ID_RE.fullmatch(direct):
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            direct = value.get("evidence_revision_id")
+            if isinstance(direct, str) and EVIDENCE_REVISION_ID_RE.fullmatch(direct):
                 result.add(direct)
-            nested = record.get("evidence_ids", [])
-            if isinstance(nested, list):
-                result.update(
-                    value for value in nested
-                    if isinstance(value, str) and EVIDENCE_ID_RE.fullmatch(value)
-                )
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for item in items:
+        visit(item)
     return result
 
 
 def collect_claim_ids(value: dict[str, Any]) -> set[str]:
-    """Collect IDs from validated claim-bearing fields."""
+    """Collect evidence revision IDs from normalized v2 support-bearing nodes."""
     result: set[str] = set()
-    for key in ("observations", "quotations", "cross_chapter_connections", "claims", "themes", "concepts", "arguments", "tensions"):
-        items = value.get(key)
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if isinstance(item, dict) and isinstance(item.get("evidence_ids"), list):
-                result.update(str(entry) for entry in item["evidence_ids"])
+    for statement in value.get("statements", []) if isinstance(value.get("statements"), list) else []:
+        if isinstance(statement, Mapping):
+            for support in statement.get("supports", []) if isinstance(statement.get("supports"), list) else []:
+                identifier = support.get("evidence_revision_id") if isinstance(support, Mapping) else None
+                if isinstance(identifier, str):
+                    result.add(identifier)
     return result

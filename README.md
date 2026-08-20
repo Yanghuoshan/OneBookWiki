@@ -3,11 +3,11 @@
 OneBookWiki 是一个基于检索优先策略的结构化书籍分析工具。它将书籍按章节拆分为不可变存档，建立持久化本地索引，通过 LLM 生成结构化维基页面，并提供 Web 阅读器和 REST API。
 
 ```text
-raw/chapters/  →  deterministic chunks + line metadata  →  .onebookwiki/
-      \→  wiki/chapters, themes, concepts, arguments, review
+raw/chapters/  →  不可变证据登记（SQLite Grounded v2）  →  发布的知识版本
+      \→  wiki/book.md, wiki/index.md, wiki/chapters, wiki/knowledge, wiki/structure.json, wiki/evidence.json
 ```
 
-原始章节文件是唯一事实来源，Markdown 维基是结构化解读，派生索引可以随时重建。
+原始章节文件是唯一事实来源。所有陈述与综合内容先在 SQLite 中以不可变的 Grounded v2 知识版本发布，`wiki/` 下的静态 Markdown/JSON 只是该已发布版本的只读投影，可随时从数据库重新渲染。
 
 ---
 
@@ -63,9 +63,15 @@ export ONEBOOKWIKI_LLM_BASE_URL=https://api.openai.com/v1   # 可替换为任意
 
 ### 4. 构建
 
+发布一个可对外提供服务的 Grounded v2 版本（非 `--dry-run`）时，必须提供 `--database` 和 `--book-id`，指向一个已存在的 Grounded v2 SQLite 数据库和其中的数字书籍 ID：
+
 ```bash
-onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.epub ./books/my-book \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 ```
+
+不带 `--database`/`--book-id` 时只能使用 `--dry-run`：导入、索引、构建生成计划，但不发布知识、不渲染 `wiki/`、不构建向量。
 
 支持的源格式：PDF、EPUB、MOBI/AZW/AZW3、TXT、DOC/DOCX、HTML。
 
@@ -165,7 +171,9 @@ $env:ONEBOOKWIKI_BGE_M3_DEVICE = "cuda"
 
 onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
 onebookwiki-ingest index ./books/my-book
-onebookwiki-query ./books/my-book "这本书的核心论点是什么？"
+onebookwiki-generate all ./books/my-book \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 ```
 
 BGE-M3 向量持久化在 `<book>/.onebookwiki/vectors.json`；仅当原始内容、分块配置、后端和模型全部匹配时才复用未变章节。默认分块配置为中文/CJK `400/60/520` 令牌，英文 `500/75/650`（目标/重叠/硬上限）。修改分块配置、切换后端或更改模型路径后需重新运行索引命令。
@@ -185,11 +193,9 @@ $env:MODELSCOPE_API_KEY = "your-token"
 
 onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
 onebookwiki-ingest index ./books/my-book --backend modelscope
-onebookwiki-query ./books/my-book "这本书的核心论点是什么？" --backend modelscope
-
-# 混合检索：词汇候选 + ModelScope 向量 + 本地重排序 + LLM 回答
-onebookwiki-query ./books/my-book "这本书的核心论点是什么？" \
-  --retrieval hybrid --generate --provider openai-compatible --max-output-tokens 512
+onebookwiki-generate all ./books/my-book --embedding-backend modelscope \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 ```
 
 云后端将变更的分块文本发送到 `https://api-inference.modelscope.cn/v1`，使用 `Qwen/Qwen3-Embedding-8B`。Token 仅从 `MODELSCOPE_API_KEY`（或 `ONEBOOKWIKI_EMBEDDING_API_KEY`）读取，绝不存储在 manifest、日志或源码文件中。复制 `.env.example` 查看变量名称。
@@ -209,8 +215,10 @@ onebookwiki-query ./books/my-book "这本书的核心论点是什么？" \
 | MOBI/AZW/AZW3 | 无 DRM 提取的 EPUB/HTML 载荷 | `.[kindle]` 安装 GPL-3.0-only `mobi`；使用前请评估该许可证。不支持 DRM 移除 |
 
 ```bash
-onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
-onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.epub ./books/my-book \
+  --provider openai-compatible --model gpt-4o-mini --database ./onebookwiki.db --book-id 1
+onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 \
+  --provider openai-compatible --model gpt-4o-mini --database ./onebookwiki.db --book-id 1
 onebookwiki-build book.txt ./books/my-book --backend lexical --provider none --dry-run
 onebookwiki-build book.docx ./books/my-book --backend lexical --provider none --dry-run
 
@@ -218,65 +226,80 @@ onebookwiki-build book.docx ./books/my-book --backend lexical --provider none --
 onebookwiki-ingest-epub book.epub ./books/my-book
 onebookwiki-ingest-pdf book.pdf ./books/my-book --pages-per-chapter 25
 onebookwiki-ingest index ./books/my-book --backend lexical
-onebookwiki-generate all ./books/my-book --provider openai-compatible --model gpt-4o-mini
+onebookwiki-generate all ./books/my-book --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 ```
 
 使用 `--source-format` 仅用于无扩展名或命名错误的文件。PDF 结构/OCR 选项在其他格式会被拒绝。`--keep-front-matter` 仅限于 EPUB 和无 DRM 的 Kindle 输入。
 
 ## 维基生成与对话
 
-索引完成后，配置的 OpenAI 兼容提供商可以生成结构化章节解读和层级化书籍综合。模型返回 JSON 证据引用；渲染器创建确定性的维基百科风格 Markdown 页面和引用。可选的 `cloud` 安装包含 `json-repair`，可在验证前修复常见的模型 JSON 格式错误：
+索引完成后，配置的 OpenAI 兼容提供商生成结构化陈述（statement）和综合内容（composition），先原子化发布为不可变的 Grounded v2 知识版本，再渲染为确定性的 Markdown/JSON 投影。可选的 `cloud` 安装包含 `json-repair`，可在验证前修复常见的模型 JSON 格式错误。
+
+`onebookwiki-generate` 有 5 个子命令：`chapter`、`book`、`all`、`resume`、`status`。只有 `all` 和 `resume` 会发布并渲染一个完整的可对外发布版本；`chapter` 和 `book` 仅生成/检查点化草稿知识，从不发布、渲染或构建向量。`all`/`resume` 在非 `--dry-run` 时必须提供 `--database` 和 `--book-id`：
 
 ```bash
-# 生成维基
-onebookwiki-generate all ./books/my-book --provider openai-compatible --model gpt-4o-mini
-onebookwiki-generate status ./books/my-book
-onebookwiki-generate resume ./books/my-book
-onebookwiki-cost ./books/my-book --json
+# 发布一个完整版本：注册证据 → 发布数据库快照 → 生成 → 渲染 → （可选）构建向量
+onebookwiki-generate all ./books/my-book \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 
-# 对话查询
-onebookwiki-chat ./books/my-book "这本书的核心论点是什么？" --provider openai-compatible
-onebookwiki-chat ./books/my-book --interactive --provider openai-compatible --model gpt-4o-mini
+onebookwiki-generate status ./books/my-book
+onebookwiki-generate resume ./books/my-book \
+  --database ./onebookwiki.db --book-id 1
+onebookwiki-cost ./books/my-book --json
 ```
 
-使用 `--dry-run` 构建有界的可恢复计划而不调用模型。检查点和生成的 JSON 工件位于 `.onebookwiki/` 下；使用量以追加模式记录在 `usage.jsonl` 中。
+使用 `--dry-run` 构建有界的可恢复计划而不调用模型、不要求数据库、不发布、不渲染。检查点和生成的 JSON 工件位于 `.onebookwiki/` 下；使用量以追加模式记录在 `usage.jsonl` 中。
+
+对话（Chat）不是独立 CLI，而是通过 FastAPI 服务（见「后端 API」）异步处理：提交问题后由 `server/chat_worker.py` 检索已发布知识版本中的陈述/综合内容，仅在证据充分时生成回答，并且只引用该书当前健康的 Grounded v2 版本；证据不足时会拒绝回答而不是编造。
+
+唯一支持的引用形式是不可变的 `onebookwiki://evidence/evr-<32 位十六进制>` 链接，指向 `wiki/evidence.json` 中已发布的证据版本；不存在、也不解析任何旧式章节内引用标记（如 `C5E8`）。
 
 ## 一键构建
 
 ```bash
-onebookwiki-build book.epub ./books/my-book --provider openai-compatible --model gpt-4o-mini
-onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 --provider openai-compatible --model gpt-4o-mini
-onebookwiki-build book.epub ./books/my-book --resume --provider openai-compatible --model gpt-4o-mini
+onebookwiki-build book.epub ./books/my-book \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
+onebookwiki-build book.pdf ./books/my-book --pages-per-chapter 25 \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
+onebookwiki-build book.epub ./books/my-book --resume \
+  --provider openai-compatible --model gpt-4o-mini \
+  --database ./onebookwiki.db --book-id 1
 # 使用 --backend lexical 无需本地模型，或 --backend modelscope 使用远程嵌入服务
+# 省略 --database/--book-id 时必须加 --dry-run（仅导入/索引/生成计划，不发布/渲染）
 ```
 
 构建后的目录结构：
 
 ```text
 raw/chapters/                 不可变源文件
-.onebookwiki/                 可重建的分块、向量、工件、检查点、使用量
-wiki/book.md                  书籍概览
+.onebookwiki/                 可重建的证据登记、分块、向量、检查点、使用量
+wiki/book.md                  已发布知识版本的书籍概览（含引用）
 wiki/index.md                 章节阅读导航
-wiki/chapters/*.md            编译后的章节文章
-wiki/structure.json           规范化的页面/章节/关联页面图
-wiki/log.md                   构建/操作日志
+wiki/chapters/*.md            按章节路由的已发布综合内容页面
+wiki/knowledge/*.md           跨章节/全书范围的已发布综合内容页面
+wiki/structure.json           规范化的页面/章节图，含 bookRevisionId
+wiki/evidence.json            已发布知识版本的证据索引，含 bookRevisionId
 ```
+
+`structure.json`/`evidence.json` 中的 `bookRevisionId` 必须与数据库中当前健康的活跃版本一致；`wiki/` 内容永远对应且仅对应这一个已发布版本。
 
 ## 命令参考
 
 ```bash
-onebookwiki-build        # 完整管线：导入 → 索引 → 生成 → 渲染 → 检查
-onebookwiki-generate     # 生成维基页面
+onebookwiki-build        # 完整管线：导入 → 索引 → 生成 → 发布 → 渲染 → 检查
+onebookwiki-generate     # chapter/book/all/resume/status；只有 all/resume 发布并渲染
 onebookwiki-ingest       # 构建索引（词汇或向量）
 onebookwiki-ingest-epub  # EPUB 导入
 onebookwiki-ingest-pdf   # PDF 导入
-onebookwiki-query        # 检索证据
-onebookwiki-chat         # 维基优先对话
-onebookwiki-check        # 一致性检查
+onebookwiki-check        # 一致性检查（校验已发布 Grounded v2 投影）
 onebookwiki-cost         # 成本报告
 ```
 
-所有命令支持 `--help` 查看详细参数。
+所有命令支持 `--help` 查看详细参数。对话（Chat）通过 FastAPI 服务提供，没有独立的 `onebookwiki-chat`/`onebookwiki-query` CLI。
 
 ---
 
@@ -400,8 +423,20 @@ docker compose up -d
 
 ## 测试
 
+后端（在 `onebookwiki/` 下运行）：
+
 ```bash
 python -m unittest discover -s tests -v
+```
+
+`server/test_import.py` 和 `server/test_fastapi.py` 依赖有状态的外部环境，不包含在上述常规套件中。
+
+前端（在 `frontend/` 下运行）：
+
+```bash
+npm install
+npm test
+npm run build
 ```
 
 ## Skill

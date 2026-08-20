@@ -6,11 +6,27 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from .markdown import sha256_text
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+CONTRACT_VERSION = "grounded-v2"
+
+_REQUIRED_V2_FIELDS = (
+    "contract_version",
+    "schema_integrity",
+    "book_revision_id",
+    "book_revision_hash",
+    "evidence_revisions",
+    "publication_health",
+)
 
 @dataclass
 class Manifest:
     schema_version: int = SCHEMA_VERSION
+    contract_version: str = CONTRACT_VERSION
+    schema_integrity: str = "grounded-v2"
+    book_revision_id: str = ""
+    book_revision_hash: str = ""
+    evidence_revisions: dict[str, dict] | None = None
+    publication_health: dict[str, object] | None = None
     embedding_backend: str = "lexical"
     embedding_model: str = "none"
     chapters: dict[str, dict] | None = None
@@ -19,11 +35,17 @@ class Manifest:
     artifacts: dict[str, dict] | None = None
 
     def __post_init__(self):
+        if self.schema_version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported manifest schema version: {self.schema_version}")
+        if self.contract_version != CONTRACT_VERSION:
+            raise ValueError(f"unsupported manifest contract: {self.contract_version}")
+        if self.schema_integrity != CONTRACT_VERSION:
+            raise ValueError(f"manifest schema integrity mismatch: {self.schema_integrity}")
+        self.evidence_revisions = self.evidence_revisions or {}
+        self.publication_health = self.publication_health or {"status": "unpublished", "reason": "not_generated"}
         self.chapters = self.chapters or {}
         self.chunks = self.chunks or {}
         self.artifacts = self.artifacts or {}
-        if self.schema_version < SCHEMA_VERSION:
-            self.schema_version = SCHEMA_VERSION
 
     @classmethod
     def load(cls, root: Path) -> "Manifest":
@@ -31,14 +53,43 @@ class Manifest:
         if not path.is_file():
             return cls()
         try:
-            return cls(**json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError, TypeError):
-            return cls()
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"invalid Grounded v2 manifest: {path}") from exc
+        if not isinstance(value, dict):
+            raise ValueError(f"Grounded v2 manifest must be an object: {path}")
+        if value.get("schema_version") != SCHEMA_VERSION or any(field not in value for field in _REQUIRED_V2_FIELDS):
+            raise ValueError(f"unsupported manifest contract; expected Grounded v2 schema {SCHEMA_VERSION}")
+        try:
+            return cls(**value)
+        except TypeError as exc:
+            raise ValueError(f"invalid Grounded v2 manifest fields: {path}") from exc
 
     def save(self, root: Path) -> None:
         target = root / ".onebookwiki" / "manifest.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    def pin_registry(self, snapshot) -> None:
+        """Pin the manifest to one immutable Evidence Registry snapshot."""
+        self.book_revision_id = str(snapshot.book_revision_id)
+        self.book_revision_hash = str(snapshot.book_revision_hash)
+        self.evidence_revisions = {
+            revision_id: revision.to_dict()
+            for revision_id, revision in sorted(snapshot.evidence.items())
+        }
+        for source_path, registered in snapshot.chapters.items():
+            record = self.chapters.get(source_path)
+            if record is None:
+                raise ValueError(f"indexed chapter is missing from Grounded v2 manifest: {source_path}")
+            record["source_file_hash"] = registered.source_file_hash
+            record["body_hash"] = registered.body_hash
+            record["evidence_revision_ids"] = list(registered.evidence_revision_ids)
+            for chunk_id in record.get("chunk_ids", []):
+                chunk = self.chunks.get(chunk_id)
+                if chunk is not None:
+                    chunk["book_revision_id"] = self.book_revision_id
+        self.publication_health = {"status": "staging", "reason": "knowledge_not_published"}
 
     def chapter_hash(self, path: Path) -> str:
         import hashlib

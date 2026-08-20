@@ -6,36 +6,95 @@ from unittest.mock import patch
 
 from onebookwiki.checkpoints import CheckpointStore
 from onebookwiki.chunking import chunk_text
-from onebookwiki.generation import GenerationError, GenerationOptions, _parse_json_response, _response, generate_chapters, synthesize_book
+from onebookwiki.evidence_registry import register_project
+from onebookwiki.generation import (
+    GenerationError,
+    GenerationOptions,
+    _parse_json_response,
+    _response,
+    generate_chapters,
+    synthesize_book,
+)
 from onebookwiki.index import LocalIndex
+from onebookwiki.manifest import Manifest
 from onebookwiki.providers import GenerationResponse
 
 
 class GenerationTest(unittest.TestCase):
     def setUp(self):
-        self.valid = {
-            "purpose": "Explain attention.",
-            "executive_summary": "Attention organizes inquiry.",
-            "core_thesis": "Questions direct attention.",
-            "argument_map": "Questions direct attention through inquiry.",
-            "key_concepts": ["attention"],
-            "observations": [{"text": "The source frames attention as directed inquiry.", "evidence_ids": ["C1E1"]}],
-            "quotations": [{"text": "Questions direct attention.", "evidence_ids": ["C1E1"]}],
-            "relation_to_previous": "材料不足",
-            "relation_to_following": "材料不足",
-            "cross_chapter_connections": [],
-            "open_questions": [],
-            "review_questions": [],
-            "claims": [{"text": "Questions direct attention.", "evidence_ids": ["C1E1"], "confidence": "high"}],
+        self.valid = self.payload_for_evidence("evr-" + "1" * 32, "Questions direct attention.", 1)
+
+    @staticmethod
+    def payload_for_evidence(evidence_id: str, quote: str, chapter: int | None, *, draft_prefix: str | None = None) -> dict:
+        prefix = draft_prefix or (f"chapter-{chapter}" if chapter is not None else "book")
+        scope = {
+            "documentary_scope": "reading_unit" if chapter is not None else "book",
+            "target_type": "chapter" if chapter is not None else "book",
+            "chapter": chapter,
         }
+        return {
+            "statements": [{
+                "draft_id": f"{prefix}-claim",
+                "canonical_key": f"{prefix}.claim",
+                "kind": "factual",
+                "subject": "Attention",
+                "truth_condition": "Questions direct attention.",
+                "scope": scope,
+                "abstraction": "concrete_detail",
+                "qualification": None,
+                "confidence": "high",
+                "supports": [{
+                    "evidence_revision_id": evidence_id,
+                    "support_type": "positive",
+                    "quote": quote,
+                    "span_map": {"source_line_start": 5, "source_line_end": 5},
+                }],
+            }],
+            "compositions": [{
+                "draft_id": f"{prefix}-summary",
+                "canonical_key": f"{prefix}.summary",
+                "kind": "chapter_summary" if chapter is not None else "overview",
+                "members": [{"member_type": "statement", "draft_id": f"{prefix}-claim", "role": "support"}],
+                "rendering": {"text": "Attention organizes inquiry.", "span_map": {}},
+            }],
+        }
+
+    @staticmethod
+    def evidence_for(root: Path, chapter: int) -> dict:
+        manifest = Manifest.load(root)
+        values = [
+            dict(item) for item in manifest.evidence_revisions.values()
+            if int(item["chapter"]) == chapter
+        ]
+        values.sort(key=lambda item: int(item["source_line_start"]))
+        return values[0]
 
     def make_index(self, root: Path, chapters: int = 1) -> None:
         index = LocalIndex(root)
         for number in range(1, chapters + 1):
             chapter = root / "raw" / "chapters" / f"{number:02d}-attention.md"
             chapter.parent.mkdir(parents=True, exist_ok=True)
-            chapter.write_text(f"# Chapter {number}: Attention\n\n> Chapter: {number}\n\nQuestions direct attention.\n", encoding="utf-8")
-            index.update(chapter.relative_to(root), number, chunk_text(chapter.read_text(encoding="utf-8"), chapter.relative_to(root).as_posix(), number))
+            chapter.write_text(
+                f"# Chapter {number}: Attention\n\n> Chapter: {number}\n\nQuestions direct attention.\n",
+                encoding="utf-8",
+            )
+            index.update(
+                chapter.relative_to(root), number,
+                chunk_text(chapter.read_text(encoding="utf-8"), chapter.relative_to(root).as_posix(), number),
+            )
+        snapshot = register_project(root)
+        manifest = Manifest.load(root)
+        manifest.pin_registry(snapshot)
+        manifest.save(root)
+
+    def response_for(self, root: Path, chapter: int, *, prefix: str | None = None) -> GenerationResponse:
+        evidence = self.evidence_for(root, chapter)
+        return GenerationResponse(
+            text=json.dumps(self.payload_for_evidence(
+                evidence["evidence_revision_id"], evidence["quote"], chapter, draft_prefix=prefix,
+            )),
+            model="test",
+        )
 
     def test_parser_accepts_strict_json(self):
         value, repaired, error = _parse_json_response(json.dumps(self.valid))
@@ -44,16 +103,16 @@ class GenerationTest(unittest.TestCase):
         self.assertIsNone(error)
 
     def test_parser_repairs_missing_comma(self):
-        text = '{"purpose":"Explain attention." "executive_summary":"Attention organizes inquiry."}'
+        text = '{"statements":[] "compositions":[]}'
         value, repaired, error = _parse_json_response(text)
-        self.assertEqual(value["executive_summary"], "Attention organizes inquiry.")
+        self.assertEqual(value, {"statements": [], "compositions": []})
         self.assertTrue(repaired)
         self.assertIn("invalid JSON", error or "")
 
-    def test_parser_repairs_unescaped_quotes_inside_chinese_value(self):
-        text = '{"purpose":"旨在阐明否认作为一种社会与政治现象，并将其与单纯的"否定"区分开来。","executive_summary":"燃烧的孩子"之梦建立结构性类比。"}'
+    def test_parser_repairs_unescaped_quotes_inside_value(self):
+        text = '{"text":"A phrase with an "embedded" quote."}'
         value, repaired, _ = _parse_json_response(text)
-        self.assertEqual(value["purpose"], "旨在阐明否认作为一种社会与政治现象，并将其与单纯的\"否定\"区分开来。")
+        self.assertEqual(value["text"], 'A phrase with an "embedded" quote.')
         self.assertTrue(repaired)
 
     def test_parser_rejects_unrecoverable_text(self):
@@ -64,7 +123,9 @@ class GenerationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_index(root)
-            response = json.dumps(self.valid).replace(', "executive_summary"', ' "executive_summary"')
+            response = json.dumps(self.response_for(root, 1).text).replace("\\\"compositions\\\"", "\\\"compositions\\\"")
+            # Remove the delimiter between the two strict stage fields.
+            response = self.response_for(root, 1).text.replace(', "compositions"', ' "compositions"')
             with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=response, model="test")):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
             artifact = root / ".onebookwiki" / "artifacts" / "chapters" / "0001.json"
@@ -79,71 +140,41 @@ class GenerationTest(unittest.TestCase):
             self.make_index(root)
             metadata = {
                 "title": "Source Book",
-                "source_structure": {
-                    "units": [{
-                        "chapter": 1,
-                        "source_unit_id": "unit-01",
-                        "title": "第一章 开始",
-                        "source_title": "第一章 开始",
-                        "kind": "chapter",
-                        "breadcrumb": ["第一部", "第一章 开始"],
-                        "physical_page_start": 5,
-                        "physical_page_end": 8,
-                        "spine": "chapter-one",
-                        "spine_index": 4,
-                        "href": "OEBPS/chapter-one.xhtml",
-                        "fragment": "opening",
-                        "confidence": 0.91,
-                        "part": 1,
-                        "part_count": 2,
-                    }]
-                },
+                "source_structure": {"units": [{
+                    "chapter": 1, "source_unit_id": "unit-01", "title": "第一章 开始",
+                    "source_title": "第一章 开始", "kind": "chapter", "breadcrumb": ["第一部", "第一章 开始"],
+                    "physical_page_start": 5, "physical_page_end": 8, "spine": "chapter-one",
+                    "spine_index": 4, "href": "OEBPS/chapter-one.xhtml", "fragment": "opening",
+                    "confidence": 0.91, "part": 1, "part_count": 2,
+                }]},
             }
             source = root / ".onebookwiki" / "source.json"
-            source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
-            with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=json.dumps(self.valid), model="test")):
+            with patch("onebookwiki.generation.generate_response", return_value=self.response_for(root, 1)):
                 generate_chapters(root, GenerationOptions(provider="test"))
             artifact = json.loads((root / ".onebookwiki" / "artifacts" / "chapters" / "0001.json").read_text(encoding="utf-8"))
-            self.assertEqual(artifact["title"], "第一章 开始")
-            self.assertEqual(artifact["source_unit_id"], "unit-01")
-            self.assertEqual(artifact["breadcrumb"], ["第一部", "第一章 开始"])
-            self.assertEqual(artifact["physical_page_start"], 5)
-            self.assertEqual(artifact["spine"], "chapter-one")
-            self.assertEqual(artifact["spine_index"], 4)
-            self.assertEqual(artifact["href"], "OEBPS/chapter-one.xhtml")
-            self.assertEqual(artifact["fragment"], "opening")
-            self.assertEqual(artifact["part_count"], 2)
+            context = artifact["provenance"]["context"]
+            self.assertEqual(context["title"], "第一章 开始")
+            self.assertEqual(context["source_unit_id"], "unit-01")
+            self.assertEqual(context["breadcrumb"], ["第一部", "第一章 开始"])
+            self.assertEqual(context["physical_page_start"], 5)
+            self.assertEqual(context["spine"], "chapter-one")
+            self.assertEqual(context["spine_index"], 4)
+            self.assertEqual(context["href"], "OEBPS/chapter-one.xhtml")
+            self.assertEqual(context["fragment"], "opening")
+            self.assertEqual(context["part_count"], 2)
 
     def test_rollup_accepts_evidence_from_its_group(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_index(root, chapters=4)
-            chapter_responses = []
-            for number in range(1, 5):
-                chapter_value = dict(self.valid)
-                for field in ("observations", "quotations", "cross_chapter_connections"):
-                    chapter_value[field] = [dict(item, evidence_ids=[f"C{number}E1"]) for item in chapter_value[field]]
-                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"], "confidence": "high"}]
-                chapter_responses.append(GenerationResponse(text=json.dumps(chapter_value), model="test"))
+            chapter_responses = [self.response_for(root, number) for number in range(1, 5)]
             with patch("onebookwiki.generation.generate_response", side_effect=chapter_responses):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
-            rollup = {
-                "summary": "Combined",
-                "themes": [{"text": "Fourth chapter theme", "evidence_ids": ["C4E1"]}],
-                "concepts": [],
-                "arguments": [],
-                "tensions": [],
-            }
-            book = {
-                "overview": "Overview",
-                "core_thesis": "The book develops a connected inquiry.",
-                "argument_chain": "The chapters build the argument.",
-                "themes": [], "concepts": [], "arguments": [],
-                "terminology": [], "unresolved_questions": [],
-                "chapter_summaries": {str(number): f"Chapter {number} summary." for number in range(1, 5)},
-            }
-            with patch("onebookwiki.generation.generate_response", side_effect=[GenerationResponse(text=json.dumps(rollup), model="test"), GenerationResponse(text=json.dumps(book), model="test")]):
+            fourth = self.evidence_for(root, 4)
+            rollup = self.payload_for_evidence(fourth["evidence_revision_id"], fourth["quote"], None, draft_prefix="rollup")
+            rollup["statements"][0]["scope"] = {"documentary_scope": "rollup", "target_type": "book", "chapter": None}
+            with patch("onebookwiki.generation.generate_response", side_effect=[GenerationResponse(text=json.dumps(rollup), model="test"), GenerationResponse(text=json.dumps(self.payload_for_evidence(fourth["evidence_revision_id"], fourth["quote"], None)), model="test")]):
                 store = synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
             self.assertEqual(store.data["nodes"]["rollup:1-4"]["status"], "completed")
             self.assertTrue((root / ".onebookwiki" / "artifacts" / "rollups" / "0001-0004.json").is_file())
@@ -152,22 +183,13 @@ class GenerationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.make_index(root, chapters=4)
-            chapter_responses = []
-            for number in range(1, 5):
-                chapter_value = dict(self.valid)
-                for field in ("observations", "quotations", "cross_chapter_connections"):
-                    chapter_value[field] = [dict(item, evidence_ids=[f"C{number}E1"]) for item in chapter_value[field]]
-                chapter_value["claims"] = [{"text": f"Chapter {number} claim", "evidence_ids": [f"C{number}E1"], "confidence": "high"}]
-                chapter_responses.append(GenerationResponse(text=json.dumps(chapter_value), model="test"))
-            with patch("onebookwiki.generation.generate_response", side_effect=chapter_responses):
+            with patch("onebookwiki.generation.generate_response", side_effect=[self.response_for(root, number) for number in range(1, 5)]):
                 store = generate_chapters(root, GenerationOptions(provider="test"))
-            invalid = {
-                "summary": "Combined",
-                "themes": [{"text": "Unknown chapter", "evidence_ids": ["C5E1"]}],
-                "concepts": [], "arguments": [], "tensions": [],
-            }
+            fifth_id = "evr-" + "f" * 32
+            invalid = self.payload_for_evidence(fifth_id, "Unknown evidence.", None, draft_prefix="rollup")
+            invalid["statements"][0]["scope"] = {"documentary_scope": "rollup", "target_type": "book", "chapter": None}
             with patch("onebookwiki.generation.generate_response", return_value=GenerationResponse(text=json.dumps(invalid), model="test")):
-                with self.assertRaisesRegex(GenerationError, "unavailable evidence ID"):
+                with self.assertRaisesRegex(GenerationError, "unavailable evidence revision"):
                     synthesize_book(root, GenerationOptions(provider="test", run_id=store.run_id))
             checkpoint = json.loads((root / ".onebookwiki" / "checkpoints" / f"run-{store.run_id}.json").read_text(encoding="utf-8"))
             self.assertEqual(checkpoint["nodes"]["rollup:1-4"]["status"], "failed")
@@ -178,9 +200,7 @@ class GenerationTest(unittest.TestCase):
             root = Path(tmp)
             store = CheckpointStore(root, run_id="accounting")
             response = GenerationResponse(text=json.dumps(self.valid), model="test")
-            with patch("onebookwiki.generation.generate_response", return_value=response) as provider, patch(
-                "onebookwiki.generation.append_usage", side_effect=OSError("disk full")
-            ):
+            with patch("onebookwiki.generation.generate_response", return_value=response) as provider, patch("onebookwiki.generation.append_usage", side_effect=OSError("disk full")):
                 with self.assertRaisesRegex(GenerationError, "usage accounting failed"):
                     _response(root, "prompt", GenerationOptions(provider="test", retries=2), store, "chapter:1", "chapter")
             provider.assert_called_once()

@@ -132,28 +132,75 @@ export function formatLocator(record: EvidenceRecord): string {
     || 'Source reference';
 }
 
-export function resolveEvidence(id: string, evidence: EvidenceIndex): EvidenceRecord | undefined {
-  return evidence.evidence[id] || evidence.evidence[id.replace(/^onebookwiki:\/\/evidence\//, '')];
+const evidenceRevisionPattern = /^evr-[0-9a-f]{32}$/;
+
+/**
+ * Resolve a record only from a healthy Grounded v2 evidence projection.
+ *
+ * The optional revisions are deliberately positional for compatibility with
+ * callers that previously supplied one expected book revision: the first is
+ * the chat turn's pinned revision and the second is the loaded projection's
+ * revision. A missing record revision is not treated as a match.
+ */
+export function resolveEvidence(
+  id: string,
+  evidence: EvidenceIndex,
+  expectedTurnBookRevisionId?: string,
+  expectedProjectionBookRevisionId?: string,
+): EvidenceRecord | undefined {
+  const normalized = typeof id === 'string' ? id.replace(/^onebookwiki:\/\/evidence\//, '') : '';
+  if (
+    evidence.contractVersion !== 'grounded-v2'
+    || evidence.projectionStatus !== 'healthy'
+    || !evidence.bookRevisionId
+    || !evidenceRevisionPattern.test(normalized)
+  ) return undefined;
+
+  const record = evidence.evidence[normalized];
+  if (!record) return undefined;
+  if (
+    record.evidence_id !== normalized
+    || record.evidenceRevisionId !== normalized
+    || !record.bookRevisionId
+    || record.bookRevisionId !== evidence.bookRevisionId
+  ) return undefined;
+
+  const projectionRevisionId = expectedProjectionBookRevisionId || evidence.bookRevisionId;
+  if (record.bookRevisionId !== projectionRevisionId) return undefined;
+  if (expectedTurnBookRevisionId && record.bookRevisionId !== expectedTurnBookRevisionId) return undefined;
+  return record;
 }
 
-export function citationToEvidenceRecord(citation: ChatCitation, evidence: EvidenceIndex): EvidenceRecord {
-  return resolveEvidence(citation.evidence_id, evidence) || {
-    evidence_id: citation.evidence_id,
-    chunk_id: citation.chunk_id,
-    source_path: citation.source_path,
-    chapter: citation.chapter,
-    start_line: citation.start_line,
-    end_line: citation.end_line,
-    quote: citation.quote,
-  };
+export function citationToEvidenceRecord(
+  citation: ChatCitation,
+  evidence: EvidenceIndex,
+  expectedTurnBookRevisionId?: string,
+  expectedProjectionBookRevisionId?: string,
+): EvidenceRecord | undefined {
+  const evidenceId = citation.evidence_revision_id || citation.evidence_id;
+  if (citation.evidence_revision_id && citation.evidence_id !== citation.evidence_revision_id) return undefined;
+  const turnRevisionId = expectedTurnBookRevisionId || citation.book_revision_id;
+  if (citation.book_revision_id && turnRevisionId && citation.book_revision_id !== turnRevisionId) return undefined;
+  return resolveEvidence(evidenceId, evidence, turnRevisionId, expectedProjectionBookRevisionId);
 }
 
 export async function loadBook(base = resolveBookBase()): Promise<{ structure: WikiStructure; evidence: EvidenceIndex }> {
   const [structure, evidence] = await Promise.all([
     getJson<WikiStructure>(base, 'wiki/structure.json'),
-    getJson<EvidenceIndex>(base, 'wiki/evidence.json').catch(() => ({ evidence: {} })),
+    getJson<EvidenceIndex>(base, 'wiki/evidence.json'),
   ]);
-  return { structure: normalizeStructure(structure), evidence };
+  const normalizedStructure = normalizeStructure(structure);
+  if (
+    normalizedStructure.contractVersion !== 'grounded-v2'
+    || normalizedStructure.projectionStatus !== 'healthy'
+    || !normalizedStructure.bookRevisionId
+    || evidence.contractVersion !== 'grounded-v2'
+    || evidence.projectionStatus !== 'healthy'
+    || evidence.bookRevisionId !== normalizedStructure.bookRevisionId
+  ) {
+    throw new Error('书籍知识投影版本无效或不一致');
+  }
+  return { structure: normalizedStructure, evidence };
 }
 
 export async function loadPage(page: WikiPage, base = resolveBookBase()): Promise<string> {

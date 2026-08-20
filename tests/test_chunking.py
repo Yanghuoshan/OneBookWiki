@@ -1,6 +1,7 @@
 import unittest
 
 from onebookwiki.chunking import chunk_text, chunking_profile
+from onebookwiki.markdown import extract_body
 
 
 class ChunkingTest(unittest.TestCase):
@@ -14,6 +15,48 @@ class ChunkingTest(unittest.TestCase):
         self.assertGreaterEqual(chunks[-1].end_line, chunks[-1].start_line)
         self.assertIn("Alpha evidence", "\n".join(chunk.text for chunk in chunks))
         self.assertIn("Beta evidence", "\n".join(chunk.text for chunk in chunks))
+
+    def test_body_extraction_excludes_title_and_metadata_with_physical_lines(self):
+        text = (
+            "# Example\r\n"
+            "\r\n"
+            "> Book: Example\r\n"
+            "> Date: 2024-01-01\r\n"
+            "> Chapter: 1\r\n"
+            "\r\n"
+            "## Evidence\r\n"
+            "\r\n"
+            "The body contains 2024-02-02 and 12,345.\r\n"
+        )
+        extraction = extract_body(text)
+        self.assertEqual(extraction.title, "# Example")
+        self.assertEqual(extraction.header, ("> Book: Example", "> Date: 2024-01-01", "> Chapter: 1"))
+        self.assertEqual(extraction.body, "## Evidence\n\nThe body contains 2024-02-02 and 12,345.")
+        self.assertEqual(extraction.source_line_map, (7, 8, 9))
+        self.assertEqual(extraction.body_start_line, 7)
+        self.assertEqual(extraction.body_end_line, 9)
+
+        chunks = chunk_text(text, "raw/chapters/01-example.md", 1, target_words=20, overlap_words=0)
+        combined = "\n".join(chunk.text for chunk in chunks)
+        self.assertNotIn("# Example", combined)
+        self.assertNotIn("Book: Example", combined)
+        self.assertNotIn("2024-01-01", combined)
+        self.assertIn("The body contains 2024-02-02 and 12,345.", combined)
+        self.assertEqual((chunks[0].start_line, chunks[0].end_line), (7, 9))
+        self.assertEqual(chunks[0].locator["source_line_start"], 7)
+        self.assertEqual(chunks[0].locator["source_line_end"], 9)
+
+    def test_body_canonicalization_is_stable_for_line_endings_and_nfc_only(self):
+        composed = "# T\n\n正文：全角１２，café。\n"
+        crlf = composed.replace("\n", "\r\n")
+        self.assertEqual(extract_body(composed).body, extract_body(crlf).body)
+        self.assertEqual(extract_body(composed).body, "正文：全角１２，café。")
+        self.assertNotIn("正文:全角12", extract_body(composed).body)
+
+        lf_chunks = chunk_text(composed, "raw/chapters/01.md", 1, target_words=20, overlap_words=0)
+        crlf_chunks = chunk_text(crlf, "raw/chapters/01.md", 1, target_words=20, overlap_words=0)
+        self.assertEqual([chunk.content_hash for chunk in lf_chunks], [chunk.content_hash for chunk in crlf_chunks])
+        self.assertEqual([chunk.text for chunk in lf_chunks], [chunk.text for chunk in crlf_chunks])
 
     def test_default_profiles_use_smaller_budgets_for_both_languages(self):
         self.assertEqual(

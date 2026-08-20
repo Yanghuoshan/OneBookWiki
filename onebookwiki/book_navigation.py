@@ -74,6 +74,16 @@ class BookCatalog:
         source = _load(self.root / ".onebookwiki" / "source.json", ".onebookwiki/source.json")
         structure = _load(self.wiki_root / "structure.json", "wiki/structure.json")
         evidence = _load(self.wiki_root / "evidence.json", "wiki/evidence.json")
+        if (
+            structure.get("contractVersion") != "grounded-v2"
+            or structure.get("projectionStatus") != "healthy"
+            or not structure.get("bookRevisionId")
+            or evidence.get("contractVersion") != "grounded-v2"
+            or evidence.get("projectionStatus") != "healthy"
+            or evidence.get("bookRevisionId") != structure.get("bookRevisionId")
+        ):
+            raise BookCatalogError("wiki metadata does not describe one healthy Grounded v2 projection")
+        self.book_revision_id = str(structure["bookRevisionId"])
         self.title = str(structure.get("title") or source.get("title") or "")
         self.format = str(source.get("format", ""))
         self.description = str(structure.get("description", ""))
@@ -135,6 +145,9 @@ class BookCatalog:
             "part_count": int(page.get("partCount", 0) or 0),
             "breadcrumb": [str(item) for item in page.get("breadcrumb", [])],
             "related_pages": [str(item) for item in page.get("relatedPages", [])],
+            "book_revision_id": str(page.get("bookRevisionId", "")),
+            "statement_revision_ids": [str(item) for item in page.get("statementRevisionIds", [])],
+            "composition_revision_ids": [str(item) for item in page.get("compositionRevisionIds", [])],
         }
 
     def book_overview(self) -> dict[str, Any]:
@@ -189,7 +202,9 @@ class BookCatalog:
         return output
 
     def search_entities(self, query: str, *, kinds: Sequence[str] = (), limit: int = 6) -> list[dict[str, Any]]:
-        allowed = tuple(kinds) or ("theme", "concept", "argument")
+        # Grounded v2 exposes cross-scope compositions as knowledge pages,
+        # replacing the legacy theme/concept/argument artifact categories.
+        allowed = tuple(kinds) or ("knowledge",)
         return [self._navigation_result(item) for item in self._search(SEMANTIC_ENTITY, query, kinds=allowed, limit=limit)]
 
     def _navigation_result(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -207,7 +222,10 @@ class BookCatalog:
             "breadcrumb": [str(value) for value in item.get("breadcrumb", [])],
             "related_pages": [str(value) for value in item.get("related_pages", [])],
             "outline_node_ids": [str(value) for value in item.get("outline_node_ids", [])],
-            "evidence_ids": [str(value) for value in item.get("evidence_ids", [])],
+            "evidence_revision_ids": [str(value) for value in item.get("evidence_revision_ids", [])],
+            "statement_revision_ids": [str(value) for value in item.get("statement_revision_ids", [])],
+            "composition_revision_ids": [str(value) for value in item.get("composition_revision_ids", [])],
+            "book_revision_id": str(item.get("book_revision_id", "")),
             "score": round(float(item.get("score", 0.0)), 6),
             "excerpt": _trim(str(item.get("text", "")), 180),
         }

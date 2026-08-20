@@ -216,6 +216,8 @@ button { font: inherit; }
 .chat-answer .markdown-body h1 { font-size: 1.6rem; }
 .chat-pending, .chat-result-error { margin: 0; padding: 13px 15px; color: #746d62; border-left: 3px solid #b3883e; background: #f7f1df; font-size: 14px; }
 .chat-result-error { color: #8b3b2b; border-left-color: #8b3b2b; background: #fde8e4; }
+.chat-provenance { margin: 0 0 10px; color: #a0927d; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.chat-evidence-unverified { margin: 0; padding: 10px 12px; border: 1px dashed #d3a091; border-radius: 6px; background: #fbf1ec; color: #8d5344; font-size: 12px; line-height: 1.55; }
 
 /* Right column: evidence cards for the turn */
 .chat-turn-evidence { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 4px 0 0 18px; border-left: 1px solid #e5ded1; }

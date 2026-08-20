@@ -1,8 +1,9 @@
-"""Read-only structure, evidence, and RAG-index checker for OneBookWiki.
+"""Read-only raw-index and published Grounded v2 projection checker.
 
-Usage: check_book.py [project-root] [wiki-file ...]
+Usage: check_book.py [project-root] [--json]
 
-The report is the interface. Findings do not change source or derived files.
+The published contract is ``wiki/structure.json`` plus ``wiki/evidence.json``.
+Legacy rendered artifacts and CnEn citation records are not a source of truth.
 """
 from __future__ import annotations
 
@@ -11,26 +12,23 @@ import json
 import re
 import sys
 from collections import Counter
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from onebookwiki.markdown import Candidate, contains, extract_candidates, metadata, parse_document, raw_links_of, source_content
+from onebookwiki.markdown import metadata, parse_document
 from onebookwiki.pdf_manifest import manifest_digest, validate_manifest
 
-CHAPTER_FILE_RE = re.compile(r"^(\d+)[-_](.+)\.md$")
-CHAPTER_META_RE = re.compile(r"^\d+$")
+CONTRACT_VERSION = "grounded-v2"
+EVIDENCE_ID_RE = re.compile(r"^evr-[0-9a-f]{32}$")
+BOOK_REVISION_ID_RE = re.compile(r"^book-[0-9a-f]{32}$")
+STATEMENT_REVISION_ID_RE = re.compile(r"^str-[0-9a-f]{32}$")
+COMPOSITION_REVISION_ID_RE = re.compile(r"^cmpr-[0-9a-f]{32}$")
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+ONEBOOKWIKI_EVIDENCE_RE = re.compile(r"onebookwiki://evidence/([^\s)`]>]+)")
+CNEN_RE = re.compile(r"(?<![A-Za-z0-9_/])C\d+E\d+(?![A-Za-z0-9_/])")
 NO_MATERIAL_RE = re.compile(r"^## \[[^\]]*\]\s*ingest\s*\|\s*no material:\s*`?(\S+?)`?\s*$", re.IGNORECASE)
-SKIP_ARTICLES = {"index.md", "log.md", "book.md"}
-INTERNAL_CITATION_RE = re.compile(r"(?<![\\w/])C\\d+E\\d+(?![\\w/])")
 SUPPORTED_SOURCE_FORMATS = {"PDF", "EPUB", "MOBI", "AZW", "AZW3", "TXT", "DOC", "DOCX", "HTML"}
-
-@dataclass(frozen=True)
-class Chapter:
-    path: Path
-    number: int | None
-    title: str
-    raw_links: tuple[str, ...]
 
 
 def relative(root: Path, path: Path) -> str:
@@ -40,96 +38,128 @@ def relative(root: Path, path: Path) -> str:
         return str(path)
 
 
-def chapter_from_path(root: Path, path: Path) -> Chapter:
-    text = path.read_text(encoding="utf-8")
-    document = parse_document(text)
-    values = metadata(document)
-    raw_number = values.get("chapter", "")
-    number = int(raw_number) if CHAPTER_META_RE.fullmatch(raw_number) else None
-    title = (document.title or path.stem).removeprefix("# ")
-    return Chapter(path, number, title, tuple(raw_links_of(text)))
+def _read_json(path: Path, label: str) -> tuple[dict[str, Any] | None, list[str]]:
+    if not path.is_file():
+        return None, [f"{label} is missing"]
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return None, [f"{label} is invalid JSON: {error}"]
+    if not isinstance(value, dict):
+        return None, [f"{label} must be a JSON object"]
+    return value, []
 
 
-def chapter_pages(root: Path) -> list[Chapter]:
-    directory = root / "wiki" / "chapters"
-    if not directory.is_dir():
-        return []
-    return [chapter_from_path(root, path) for path in sorted(directory.glob("*.md"))]
+def _nonempty_string(value: object, label: str, problems: list[str]) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        problems.append(f"{label} must be a non-empty string")
+        return False
+    return True
 
 
-def evidence_for(chapter: Chapter, root: Path) -> tuple[list[str], list[str]]:
-    text = chapter.path.read_text(encoding="utf-8")
-    links = list(chapter.raw_links)
-    errors: list[str] = []
-    if len(links) != 1:
-        errors.append("chapter must have exactly one Raw link")
-        return [], errors
-    raw_root = (root / "raw" / "chapters").resolve()
-    target = (chapter.path.parent / links[0]).resolve()
-    if not target.is_relative_to(raw_root):
-        errors.append(f"Raw link escapes raw/chapters/: {links[0]}")
-        return [], errors
-    if not target.is_file():
-        errors.append(f"unresolvable Raw link: {links[0]}")
-        return [], errors
-    raw = source_content(target)
-    raw_chapter = metadata(parse_document(target.read_text(encoding="utf-8"))).get("chapter", "")
-    if chapter.number is not None and raw_chapter != str(chapter.number):
-        errors.append(f"Raw chapter metadata is {raw_chapter or 'missing'}, expected {chapter.number}")
-    misses = [candidate.value for candidate in extract_candidates(text) if not contains(raw, Candidate(candidate.kind, candidate.value))]
-    return misses, errors
-
-
-def chapter_order(chapters: list[Chapter]) -> list[str]:
-    problems: list[str] = []
-    numbers = [chapter.number for chapter in chapters if chapter.number is not None]
-    for chapter in chapters:
-        match = CHAPTER_FILE_RE.match(chapter.path.name)
-        if chapter.number is None:
-            problems.append(f"{chapter.path.name}: missing or malformed Chapter metadata")
-        elif not match:
-            problems.append(f"{chapter.path.name}: filename lacks chapter number")
-        elif int(match.group(1)) != chapter.number:
-            problems.append(f"{chapter.path.name}: filename number does not match Chapter {chapter.number}")
-    for number, count in Counter(numbers).items():
-        if count > 1:
-            problems.append(f"duplicate chapter number: {number}")
-    if numbers:
-        expected = set(range(1, max(numbers) + 1))
-        for missing in sorted(expected - set(numbers)):
-            problems.append(f"missing chapter number: {missing}")
-    return problems
-
-
-def map_problems(root: Path, chapters: list[Chapter]) -> list[str]:
-    index = root / "wiki" / "index.md"
-    if not index.is_file():
-        return ["wiki/index.md is missing"]
-    lines = index.read_text(encoding="utf-8").splitlines()
-    listed: list[str] = []
-    for line in lines:
-        if "chapters/" not in line:
+def _string_array(value: object, label: str, problems: list[str]) -> list[str] | None:
+    if not isinstance(value, list):
+        problems.append(f"{label} must be an array")
+        return None
+    result: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            problems.append(f"{label}[{index}] must be a non-empty string")
             continue
-        listed.extend(target.split("#", 1)[0] for target in LINK_RE.findall(line) if target.startswith("chapters/"))
-    expected = [f"chapters/{chapter.path.name}" for chapter in sorted(chapters, key=lambda item: item.number or 0)]
-    problems = []
-    for item in expected:
-        if item not in listed:
-            problems.append(f"reading map missing chapter row: {item}")
-    for item in listed:
-        if not (root / "wiki" / item).is_file():
-            problems.append(f"reading map links to missing file: {item}")
-    ordered = [item for item in listed if item in expected]
-    if ordered != [item for item in expected if item in ordered]:
-        problems.append("reading map chapter rows are not numerically ordered")
+        if item in seen:
+            problems.append(f"{label} contains duplicate value: {item}")
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _positive_int(value: object, label: str, problems: list[str]) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        problems.append(f"{label} must be a positive integer")
+        return False
+    return True
+
+
+def _safe_relative_path(root: Path, value: object, label: str, problems: list[str], suffix: str | None = None) -> Path | None:
+    if not isinstance(value, str) or not value or "\\" in value:
+        problems.append(f"{label} is not a safe relative path")
+        return None
+    parts = value.split("/")
+    if not parts or value.startswith("/") or any(part in {"", ".", ".."} for part in parts) or ":" in parts[0]:
+        problems.append(f"{label} is not a safe relative path: {value}")
+        return None
+    if suffix is not None and not value.lower().endswith(suffix.lower()):
+        problems.append(f"{label} must end with {suffix}: {value}")
+        return None
+    target = (root / Path(*parts)).resolve()
+    try:
+        target.relative_to(root.resolve())
+    except ValueError:
+        problems.append(f"{label} escapes its allowed root: {value}")
+        return None
+    if not target.is_file():
+        problems.append(f"{label} is missing: {value}")
+        return None
+    return target
+
+
+def _revision_array(value: object, label: str, pattern: re.Pattern[str], problems: list[str]) -> list[str] | None:
+    values = _string_array(value, label, problems)
+    if values is None:
+        return None
+    for item in values:
+        if not pattern.fullmatch(item):
+            problems.append(f"{label} contains invalid revision id: {item}")
+    return values
+
+
+def _raw_chapter_number(path: Path) -> int | None:
+    try:
+        values = metadata(parse_document(path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, ValueError):
+        values = {}
+    chapter = values.get("chapter", "").strip()
+    if chapter.isdigit():
+        return int(chapter)
+    match = re.match(r"^(\d+)[-_]", path.name)
+    return int(match.group(1)) if match else None
+
+
+def raw_chapter_health(root: Path) -> list[str]:
+    """Check only raw chapter naming/order; wiki Markdown is not consulted."""
+    raw_dir = root / "raw" / "chapters"
+    chapters = sorted(raw_dir.glob("*.md")) if raw_dir.is_dir() else []
+    numbers = [_raw_chapter_number(path) for path in chapters]
+    problems: list[str] = []
+    for path, number in zip(chapters, numbers):
+        match = re.match(r"^(\d+)[-_]", path.name)
+        if number is None:
+            problems.append(f"{relative(root, path)}: raw chapter has missing or malformed Chapter metadata")
+        elif not match or int(match.group(1)) != number:
+            problems.append(f"{relative(root, path)}: raw filename number does not match Chapter {number}")
+    known = [number for number in numbers if number is not None]
+    for number, count in Counter(known).items():
+        if count > 1:
+            problems.append(f"duplicate raw chapter number: {number}")
+    if known:
+        expected = set(range(1, max(known) + 1))
+        for missing in sorted(expected - set(known)):
+            problems.append(f"missing raw chapter number: {missing}")
     return problems
 
 
 def broken_links(root: Path) -> list[str]:
     problems: list[str] = []
     wiki = root / "wiki"
+    if not wiki.is_dir():
+        return []
     for path in wiki.rglob("*.md"):
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            problems.append(f"{relative(root, path)} is unreadable: {error}")
+            continue
         for target in LINK_RE.findall(text):
             target = target.split("#", 1)[0]
             if not target or "://" in target or target.startswith("mailto:"):
@@ -138,26 +168,6 @@ def broken_links(root: Path) -> list[str]:
             if not candidate.is_file():
                 problems.append(f"{relative(root, path)} -> {target}")
     return sorted(set(problems))
-
-
-def relationship_coverage(root: Path, chapters: list[Chapter]) -> list[str]:
-    known = {chapter.path.resolve() for chapter in chapters}
-    problems: list[str] = []
-    for group in ("themes", "concepts", "arguments"):
-        directory = root / "wiki" / group
-        if not directory.is_dir():
-            continue
-        for page in directory.glob("*.md"):
-            targets = []
-            for target in LINK_RE.findall(page.read_text(encoding="utf-8")):
-                if not target or "://" in target or target.startswith("mailto:"):
-                    continue
-                candidate = (page.parent / target.split("#", 1)[0]).resolve()
-                if candidate in known:
-                    targets.append(candidate)
-            if not targets:
-                problems.append(f"{relative(root, page)} has no chapter evidence link")
-    return problems
 
 
 def no_material_paths(log: Path) -> set[str]:
@@ -171,65 +181,71 @@ def no_material_paths(log: Path) -> set[str]:
     return paths
 
 
-def raw_inventory(root: Path, chapters: list[Chapter]) -> list[str]:
-    referenced = set()
-    for chapter in chapters:
-        for link in chapter.raw_links:
-            referenced.add((chapter.path.parent / link).resolve())
-    ignored = no_material_paths(root / "wiki" / "log.md")
-    missing = []
-    for path in sorted((root / "raw" / "chapters").glob("*.md")):
-        if path.resolve() not in referenced and relative(root, path) not in ignored:
-            missing.append(relative(root, path))
-    return missing
-
-
 def rag_health(root: Path) -> list[str]:
+    """Validate the independent raw chapter index and Grounded v2 manifest."""
     manifest_path = root / ".onebookwiki" / "manifest.json"
     if not manifest_path.is_file():
         return ["no manifest; run onebookwiki-ingest index"]
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except ValueError:
-        return ["manifest is not valid JSON"]
-    chunks = manifest.get("chunks", {})
-    problems = []
-    for raw in sorted((root / "raw" / "chapters").glob("*.md")):
+    except (OSError, ValueError) as error:
+        return [f"manifest is not valid JSON: {error}"]
+    if not isinstance(manifest, dict):
+        return ["manifest must be a JSON object"]
+    problems: list[str] = []
+    if manifest.get("schema_version") != 5:
+        problems.append("manifest schema_version must be 5")
+    if manifest.get("contract_version") != CONTRACT_VERSION:
+        problems.append("manifest contract_version must be grounded-v2")
+    if manifest.get("schema_integrity") != CONTRACT_VERSION:
+        problems.append("manifest schema_integrity must be grounded-v2")
+    _nonempty_string(manifest.get("book_revision_id"), "manifest book_revision_id", problems)
+    if not isinstance(manifest.get("book_revision_hash"), str) or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("book_revision_hash"))):
+        problems.append("manifest book_revision_hash must be 64 lowercase hex characters")
+    chapters = manifest.get("chapters")
+    chunks = manifest.get("chunks")
+    if not isinstance(chapters, dict):
+        problems.append("manifest chapters must be an object")
+        chapters = {}
+    if not isinstance(chunks, dict):
+        problems.append("manifest chunks must be an object")
+        chunks = {}
+    publication = manifest.get("publication_health")
+    if not isinstance(publication, dict):
+        problems.append("manifest publication_health must be an object")
+    evidence_revisions = manifest.get("evidence_revisions")
+    if not isinstance(evidence_revisions, dict):
+        problems.append("manifest evidence_revisions must be an object")
+    raw_dir = root / "raw" / "chapters"
+    for raw in sorted(raw_dir.glob("*.md")) if raw_dir.is_dir() else []:
         key = relative(root, raw)
-        chapter = manifest.get("chapters", {}).get(key)
-        if not chapter:
+        chapter = chapters.get(key)
+        if not isinstance(chapter, dict):
             problems.append(f"raw chapter not indexed: {key}")
             continue
         actual = hashlib.sha256(raw.read_bytes()).hexdigest()
         if chapter.get("content_hash") != actual:
             problems.append(f"stale chapter hash: {key}")
         ids = chapter.get("chunk_ids", [])
-        if not ids:
+        if not isinstance(ids, list) or not ids:
             problems.append(f"chapter has no chunks: {key}")
+            ids = []
+        line_count = len(raw.read_text(encoding="utf-8").splitlines())
         for chunk_id in ids:
             chunk = chunks.get(chunk_id)
-            if not chunk:
+            if not isinstance(chunk, dict):
                 problems.append(f"manifest references missing chunk: {chunk_id}")
-            elif not chunk.get("start_line") or not chunk.get("end_line"):
-                problems.append(f"chunk has no line range: {chunk_id}")
-    return problems
-
-
-def print_section(title: str, values: list[str], quiet: bool = False) -> int:
-    if quiet:
-        return len(values)
-    print(f"## {title}")
-    if values:
-        for value in values:
-            print(f"- {value}")
-    else:
-        print("(none)")
-    print()
-    return len(values)
+                continue
+            start, end = chunk.get("start_line"), chunk.get("end_line")
+            if not _positive_int(start, f"chunk {chunk_id} start_line", problems) or not _positive_int(end, f"chunk {chunk_id} end_line", problems):
+                continue
+            if end < start or end > line_count:
+                problems.append(f"chunk has invalid line range: {chunk_id}")
+    return sorted(set(problems))
 
 
 def source_metadata_health(root: Path, source_metadata: dict[str, object] | None) -> list[str]:
-    """Check schema-v3 source metadata without requiring new fields in legacy books."""
+    """Check schema-v3 source metadata independently of the Wiki projection."""
     if source_metadata is None:
         return []
     problems: list[str] = []
@@ -281,11 +297,7 @@ def source_metadata_health(root: Path, source_metadata: dict[str, object] | None
         for node in nodes:
             if not isinstance(node, dict):
                 continue
-            for page_id in node.get("pageIds", []) or []:
-                if not isinstance(page_id, str) or not re.fullmatch(r"chapter-\d+", page_id):
-                    problems.append("source outline has invalid pageId")
-            unit_ids = node.get("unitIds", []) or []
-            for unit_id in unit_ids:
+            for unit_id in node.get("unitIds", []) or []:
                 if isinstance(unit_id, str):
                     referenced.add(unit_id)
                 else:
@@ -305,7 +317,6 @@ def source_metadata_health(root: Path, source_metadata: dict[str, object] | None
 
 
 def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: dict[str, object]) -> list[str]:
-    """Verify optional PDF structure-manifest provenance without touching source files."""
     source_structure = source_metadata.get("source_structure")
     source_provenance = source_structure.get("structure_manifest") if isinstance(source_structure, dict) else None
     report_provenance = report.get("structure_manifest")
@@ -320,8 +331,7 @@ def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: 
     if not isinstance(snapshot_path, str) or not snapshot_path:
         return ["PDF structure manifest provenance has no snapshot_path"]
     snapshot = (root / snapshot_path).resolve()
-    metadata_root = root.resolve()
-    if not snapshot.is_relative_to(metadata_root) or not snapshot.is_file():
+    if not snapshot.is_relative_to(root.resolve()) or not snapshot.is_file():
         return ["PDF structure manifest snapshot is missing or unsafe"]
     try:
         manifest = json.loads(snapshot.read_text(encoding="utf-8"))
@@ -352,7 +362,6 @@ def pdf_manifest_health(root: Path, source_metadata: dict[str, object], report: 
 
 
 def pdf_ocr_health(report: dict[str, object], source_metadata: dict[str, object] | None) -> list[str]:
-    """Validate OCR provenance without importing Paddle or inspecting model paths."""
     mode = report.get("ocr")
     if mode == "disabled":
         return []
@@ -387,282 +396,338 @@ def pdf_ocr_health(report: dict[str, object], source_metadata: dict[str, object]
     return problems
 
 
-def structure_health(root: Path) -> list[str]:
-    """Validate the canonical page graph emitted with generated wiki pages."""
-    structure_path = root / "wiki" / "structure.json"
-    artifacts = root / ".onebookwiki" / "artifacts"
-    if not structure_path.is_file():
-        return ["wiki/structure.json is missing"] if (artifacts / "book.json").is_file() else []
+def pdf_health(root: Path) -> list[str]:
+    """Validate PDF structure/OCR/manifest provenance without requiring a projection."""
+    source_path = root / ".onebookwiki" / "source.json"
+    source_metadata: dict[str, object] | None = None
+    problems: list[str] = []
+    if source_path.is_file():
+        try:
+            value = json.loads(source_path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                problems.append(".onebookwiki/source.json must be a JSON object")
+            else:
+                source_metadata = value
+        except (OSError, ValueError):
+            problems.append(".onebookwiki/source.json is invalid JSON")
+    problems.extend(source_metadata_health(root, source_metadata))
+    if not source_metadata or str(source_metadata.get("format", "")).upper() != "PDF":
+        return problems
+    report_path = root / ".onebookwiki" / "structure-report.json"
+    if not report_path.is_file():
+        return [*problems, "PDF source is missing .onebookwiki/structure-report.json"]
     try:
-        value = json.loads(structure_path.read_text(encoding="utf-8"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
-        return [f"wiki/structure.json is invalid JSON: {error}"]
-    if not isinstance(value, dict):
-        return ["wiki/structure.json must be a JSON object"]
+        return [*problems, f"structure report is invalid JSON: {error}"]
+    if not isinstance(report, dict):
+        return [*problems, "structure report must be a JSON object"]
+    problems.extend(pdf_ocr_health(report, source_metadata))
+    if not isinstance(report.get("selected_method"), str):
+        problems.append("structure report has no selected_method")
+    postprocess = report.get("postprocess")
+    if postprocess is not None:
+        if not isinstance(postprocess, dict):
+            problems.append("structure report postprocess must be an object")
+        else:
+            if postprocess.get("mode") not in {"off", "auto", "strict"}:
+                problems.append("structure report postprocess has invalid mode")
+            if postprocess.get("engine") != "pymupdf-existing-text":
+                problems.append("structure report postprocess must use existing PDF text")
+            if postprocess.get("semantic_model") != "none":
+                problems.append("structure report postprocess must declare no semantic model")
+            processed_pages = postprocess.get("pages_processed", 0)
+            changed_pages = postprocess.get("pages_changed", 0)
+            if not isinstance(processed_pages, int) or processed_pages < 0:
+                problems.append("structure report postprocess has invalid pages_processed")
+            if not isinstance(changed_pages, int) or changed_pages < 0:
+                problems.append("structure report postprocess has invalid pages_changed")
+            if isinstance(processed_pages, int) and isinstance(changed_pages, int) and changed_pages > processed_pages:
+                problems.append("structure report postprocess pages_changed exceeds pages_processed")
+    problems.extend(pdf_manifest_health(root, source_metadata, report))
+    return sorted(set(problems))
+
+
+def _validate_outline(nodes: object, page_ids: set[str], problems: list[str], prefix: str = "sourceOutline", seen: set[str] | None = None) -> None:
+    if not isinstance(nodes, list):
+        problems.append(f"{prefix} must be an array")
+        return
+    seen = seen if seen is not None else set()
+    for index, node in enumerate(nodes, 1):
+        location = f"{prefix}[{index}]"
+        if not isinstance(node, dict):
+            problems.append(f"{location} is not an object")
+            continue
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not SAFE_ID_RE.fullmatch(node_id):
+            problems.append(f"{location} has invalid id")
+        elif node_id in seen:
+            problems.append(f"sourceOutline has duplicate node id: {node_id}")
+        else:
+            seen.add(node_id)
+        page_refs = _string_array(node.get("pageIds", []), f"{location}.pageIds", problems)
+        if page_refs:
+            for page_id in page_refs:
+                if page_id not in page_ids:
+                    problems.append(f"{location} references unknown page: {page_id}")
+        for key in ("unitIds",):
+            if key in node:
+                _string_array(node.get(key), f"{location}.{key}", problems)
+        if "chapters" in node:
+            chapters = node.get("chapters")
+            if not isinstance(chapters, list) or any(not _positive_int(item, f"{location}.chapters", problems) for item in chapters):
+                problems.append(f"{location}.chapters must contain positive integers")
+        _validate_outline(node.get("children", []), page_ids, problems, f"{location}.children", seen)
+
+
+def structure_health(root: Path) -> list[str]:
+    """Validate the published Grounded v2 page graph and provenance references."""
+    value, problems = _read_json(root / "wiki" / "structure.json", "wiki/structure.json")
+    if value is None:
+        return problems
+    if value.get("contractVersion") != CONTRACT_VERSION:
+        problems.append("wiki/structure.json contractVersion must be grounded-v2")
+    if value.get("projectionStatus") != "healthy":
+        problems.append("wiki/structure.json projectionStatus must be healthy")
+    revision = value.get("bookRevisionId")
+    if not _nonempty_string(revision, "wiki/structure.json bookRevisionId", problems):
+        revision = None
+    elif BOOK_REVISION_ID_RE.fullmatch(str(revision)) is None:
+        problems.append("wiki/structure.json bookRevisionId has invalid format")
     pages = value.get("pages")
     sections = value.get("sections")
-    if not isinstance(pages, list) or not isinstance(sections, list):
-        return ["wiki/structure.json requires pages and sections arrays"]
-    problems: list[str] = []
+    if not isinstance(pages, list) or not pages:
+        problems.append("wiki/structure.json requires a non-empty pages array")
+        pages = []
+    if not isinstance(sections, list) or not sections:
+        problems.append("wiki/structure.json requires a non-empty sections array")
+        sections = []
     page_ids: set[str] = set()
     page_paths: set[str] = set()
-    wiki_root = (root / "wiki").resolve()
+    page_evidence: list[tuple[str, list[str]]] = []
     for index, page in enumerate(pages, 1):
+        label = f"structure page {index}"
         if not isinstance(page, dict):
-            problems.append(f"structure page {index} is not an object")
+            problems.append(f"{label} is not an object")
             continue
         page_id = page.get("id")
         page_path = page.get("path")
-        if not isinstance(page_id, str) or not page_id:
-            problems.append(f"structure page {index} has no id")
-            continue
-        if page_id in page_ids:
+        if not isinstance(page_id, str) or not SAFE_ID_RE.fullmatch(page_id):
+            problems.append(f"{label} has invalid safe id")
+            page_id = None
+        elif page_id in page_ids:
             problems.append(f"structure has duplicate page id: {page_id}")
-        page_ids.add(page_id)
-        if not isinstance(page_path, str) or not page_path:
-            problems.append(f"structure page {page_id} has no path")
-            continue
-        if page_path in page_paths:
-            problems.append(f"structure has duplicate page path: {page_path}")
-        page_paths.add(page_path)
-        target = (wiki_root / page_path).resolve()
-        if not target.is_relative_to(wiki_root) or not target.is_file():
-            problems.append(f"structure page {page_id} has missing or unsafe path: {page_path}")
+        else:
+            page_ids.add(page_id)
+        if not isinstance(page_path, str) or page_path in page_paths:
+            if page_path in page_paths:
+                problems.append(f"structure has duplicate page path: {page_path}")
+            else:
+                problems.append(f"{label} has no path")
+        else:
+            page_paths.add(page_path)
+            _safe_relative_path(root / "wiki", page_path, f"structure page {page_id or index} path", problems, ".md")
+        if revision is not None and page.get("bookRevisionId") != revision:
+            problems.append(f"structure page {page_id or index} has mismatched bookRevisionId")
+        related = _string_array(page.get("relatedPages", []), f"structure page {page_id or index}.relatedPages", problems)
+        if related:
+            for related_id in related:
+                if related_id not in page_ids:
+                    # Page IDs may be declared later; defer the final check below.
+                    pass
+        for key, pattern in (("statementRevisionIds", STATEMENT_REVISION_ID_RE), ("compositionRevisionIds", COMPOSITION_REVISION_ID_RE), ("evidenceRevisionIds", EVIDENCE_ID_RE)):
+            if key in page:
+                refs = _revision_array(page.get(key), f"structure page {page_id or index}.{key}", pattern, problems)
+                if key == "evidenceRevisionIds" and refs is not None:
+                    page_evidence.append((str(page_id or index), refs))
+        for key in ("rawSources", "breadcrumb"):
+            if key in page:
+                _string_array(page.get(key), f"structure page {page_id or index}.{key}", problems)
+        for key in ("part", "partCount", "chapter", "spineIndex"):
+            if key in page and page.get(key) is not None:
+                _positive_int(page.get(key), f"structure page {page_id or index}.{key}", problems)
     for page in pages:
         if not isinstance(page, dict) or not isinstance(page.get("id"), str):
             continue
-        for related in page.get("relatedPages", []):
-            if related not in page_ids:
-                problems.append(f"structure page {page['id']} references unknown related page: {related}")
-
-    def check_outline(nodes: object, prefix: str = "sourceOutline") -> None:
-        if not isinstance(nodes, list):
-            problems.append(f"{prefix} must be an array")
-            return
-        node_ids: set[str] = set()
-        def visit(items: list[object], location: str) -> None:
-            for index, node in enumerate(items, 1):
-                node_location = f"{location}[{index}]"
-                if not isinstance(node, dict):
-                    problems.append(f"{node_location} is not an object")
-                    continue
-                node_id = node.get("id")
-                if not isinstance(node_id, str) or not node_id:
-                    problems.append(f"{node_location} has no id")
-                elif node_id in node_ids:
-                    problems.append(f"sourceOutline has duplicate node id: {node_id}")
-                else:
-                    node_ids.add(node_id)
-                page_ids = node.get("pageIds", [])
-                if not isinstance(page_ids, list):
-                    problems.append(f"{node_location} pageIds must be an array")
-                else:
-                    for page_id in page_ids:
-                        if page_id not in page_ids_all:
-                            problems.append(f"{node_location} references unknown page: {page_id}")
-                children = node.get("children", [])
-                if not isinstance(children, list):
-                    problems.append(f"{node_location} children must be an array")
-                else:
-                    visit(children, f"{node_location}.children")
-        page_ids_all = page_ids
-        visit(nodes, prefix)
-
-    if "sourceOutline" in value:
-        check_outline(value.get("sourceOutline"))
+        related = _string_array(page.get("relatedPages", []), f"structure page {page['id']}.relatedPages", problems) or []
+        for related_id in related:
+            if related_id not in page_ids:
+                problems.append(f"structure page {page['id']} references unknown related page: {related_id}")
     section_ids: set[str] = set()
     for index, section in enumerate(sections, 1):
         if not isinstance(section, dict):
             problems.append(f"structure section {index} is not an object")
             continue
         section_id = section.get("id")
-        if not isinstance(section_id, str) or not section_id:
-            problems.append(f"structure section {index} has no id")
+        if not isinstance(section_id, str) or not SAFE_ID_RE.fullmatch(section_id):
+            problems.append(f"structure section {index} has invalid id")
         elif section_id in section_ids:
             problems.append(f"structure has duplicate section id: {section_id}")
         else:
             section_ids.add(section_id)
-        for page_id in section.get("pages", []):
+        page_refs = _string_array(section.get("pages", []), f"structure section {section_id or index}.pages", problems) or []
+        for page_id in page_refs:
             if page_id not in page_ids:
                 problems.append(f"structure section {section_id or index} references unknown page: {page_id}")
-    expected_paths = {
-        path.relative_to(wiki_root).as_posix()
-        for path in wiki_root.rglob("*.md")
-        if path.name != "log.md"
-    }
-    for page_path in sorted(expected_paths - page_paths):
-        problems.append(f"structure omits wiki page: {page_path}")
-    for page_path in sorted(page_paths - expected_paths):
-        problems.append(f"structure references non-page: {page_path}")
-    report_path = root / ".onebookwiki" / "structure-report.json"
-    source_path = root / ".onebookwiki" / "source.json"
-    source_format = ""
-    source_metadata: dict[str, object] | None = None
-    if source_path.is_file():
-        try:
-            parsed_source = json.loads(source_path.read_text(encoding="utf-8"))
-            if not isinstance(parsed_source, dict):
-                problems.append(".onebookwiki/source.json must be a JSON object")
-            else:
-                source_metadata = parsed_source
-                source_format = str(source_metadata.get("format", "")).upper()
-        except (OSError, ValueError):
-            problems.append(".onebookwiki/source.json is invalid JSON")
-    problems.extend(source_metadata_health(root, source_metadata))
-    if source_format == "PDF":
-        if not report_path.is_file():
-            problems.append("PDF source is missing .onebookwiki/structure-report.json")
-        else:
-            try:
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                if not isinstance(report, dict):
-                    problems.append("structure report must be a JSON object")
-                else:
-                    problems.extend(pdf_ocr_health(report, source_metadata))
-                    if not isinstance(report.get("selected_method"), str):
-                        problems.append("structure report has no selected_method")
-                    postprocess = report.get("postprocess")
-                    if postprocess is not None:
-                        if not isinstance(postprocess, dict):
-                            problems.append("structure report postprocess must be an object")
-                        else:
-                            mode = postprocess.get("mode")
-                            if mode not in {"off", "auto", "strict"}:
-                                problems.append("structure report postprocess has invalid mode")
-                            if postprocess.get("engine") != "pymupdf-existing-text":
-                                problems.append("structure report postprocess must use existing PDF text")
-                            if postprocess.get("semantic_model") != "none":
-                                problems.append("structure report postprocess must declare no semantic model")
-                            processed_pages = postprocess.get("pages_processed", 0)
-                            changed_pages = postprocess.get("pages_changed", 0)
-                            if not isinstance(processed_pages, int) or processed_pages < 0:
-                                problems.append("structure report postprocess has invalid pages_processed")
-                            if not isinstance(changed_pages, int) or changed_pages < 0:
-                                problems.append("structure report postprocess has invalid pages_changed")
-                            if isinstance(processed_pages, int) and isinstance(changed_pages, int) and changed_pages > processed_pages:
-                                problems.append("structure report postprocess pages_changed exceeds pages_processed")
-                    if source_metadata is not None:
-                        problems.extend(pdf_manifest_health(root, source_metadata, report))
-            except (OSError, ValueError) as error:
-                problems.append(f"structure report is invalid JSON: {error}")
+    _validate_outline(value.get("sourceOutline"), page_ids, problems)
+    evidence_value, evidence_errors = _read_json(root / "wiki" / "evidence.json", "wiki/evidence.json")
+    if evidence_value is not None and not evidence_errors:
+        records = evidence_value.get("evidence")
+        if isinstance(records, dict):
+            known_evidence = set(records)
+            for page_id, refs in page_evidence:
+                for evidence_id in refs:
+                    if evidence_id not in known_evidence:
+                        problems.append(f"structure page {page_id} references unknown evidence revision: {evidence_id}")
+    return sorted(set(problems))
+
+
+def _validate_locator(locator: object, label: str, start: int, end: int, problems: list[str]) -> None:
+    if not isinstance(locator, dict) or not isinstance(locator.get("format"), str) or not str(locator.get("format")).strip():
+        problems.append(f"{label} must declare a usable locator format")
+        return
+    for key in ("source_line_start", "source_line_end", "line_start", "line_end"):
+        if key in locator and not _positive_int(locator.get(key), f"{label}.{key}", problems):
+            continue
+    locator_start = locator.get("source_line_start", locator.get("line_start"))
+    locator_end = locator.get("source_line_end", locator.get("line_end"))
+    if isinstance(locator_start, int) and isinstance(locator_end, int):
+        if locator_start > locator_end or locator_start < start or locator_end > end:
+            problems.append(f"{label} line range is outside the evidence range")
+
+
+def evidence_health(root: Path) -> list[str]:
+    """Validate the published immutable evidence projection, not legacy CnEn records."""
+    value, problems = _read_json(root / "wiki" / "evidence.json", "wiki/evidence.json")
+    if value is None:
+        return problems
+    if value.get("contractVersion") != CONTRACT_VERSION:
+        problems.append("wiki/evidence.json contractVersion must be grounded-v2")
+    if value.get("projectionStatus") != "healthy":
+        problems.append("wiki/evidence.json projectionStatus must be healthy")
+    revision = value.get("bookRevisionId")
+    if not _nonempty_string(revision, "wiki/evidence.json bookRevisionId", problems):
+        revision = None
+    elif BOOK_REVISION_ID_RE.fullmatch(str(revision)) is None:
+        problems.append("wiki/evidence.json bookRevisionId has invalid format")
+    records = value.get("evidence")
+    if not isinstance(records, dict) or not records:
+        problems.append("wiki/evidence.json evidence must be a non-empty object")
+        return sorted(set(problems))
+    for evidence_id, record in records.items():
+        label = f"evidence record {evidence_id}"
+        if not isinstance(evidence_id, str) or not EVIDENCE_ID_RE.fullmatch(evidence_id):
+            problems.append(f"{label} has invalid key; expected evr- plus 32 lowercase hex characters")
+            continue
+        if not isinstance(record, dict):
+            problems.append(f"{label} is not an object")
+            continue
+        if record.get("evidence_id") != evidence_id or record.get("evidenceRevisionId") != evidence_id:
+            problems.append(f"{label} key/self ID mismatch")
+        if revision is not None and record.get("bookRevisionId") != revision:
+            problems.append(f"{label} has mismatched bookRevisionId")
+        source_path = record.get("source_path")
+        _safe_relative_path(root / "raw" / "chapters", source_path.removeprefix("raw/chapters/") if isinstance(source_path, str) and source_path.startswith("raw/chapters/") else source_path, f"{label}.source_path", problems, ".md")
+        start, end = record.get("start_line"), record.get("end_line")
+        valid_start = _positive_int(start, f"{label}.start_line", problems)
+        valid_end = _positive_int(end, f"{label}.end_line", problems)
+        if valid_start and valid_end and end < start:
+            problems.append(f"{label} line range is invalid")
+        if "excerpt_start_line" in record and record.get("excerpt_start_line") != start:
+            problems.append(f"{label} excerpt_start_line does not match start_line")
+        if "excerpt_end_line" in record and record.get("excerpt_end_line") != end:
+            problems.append(f"{label} excerpt_end_line does not match end_line")
+        quote = record.get("quote")
+        if not isinstance(quote, str) or not quote.strip():
+            problems.append(f"{label} quote must be usable and non-empty")
+        excerpt = record.get("excerpt")
+        if excerpt is not None and (not isinstance(excerpt, str) or not excerpt.strip()):
+            problems.append(f"{label} excerpt must be usable when present")
+        if valid_start and valid_end:
+            _validate_locator(record.get("locator"), f"{label}.locator", int(start), int(end), problems)
+        for key, pattern in (("statementRevisionIds", STATEMENT_REVISION_ID_RE), ("compositionRevisionIds", COMPOSITION_REVISION_ID_RE)):
+            refs = _revision_array(record.get(key, []), f"{label}.{key}", pattern, problems)
+            if refs is not None and not refs:
+                # Empty reverse closures are valid for an unreferenced registry record.
+                pass
+        if "display_label" in record:
+            _nonempty_string(record.get("display_label"), f"{label}.display_label", problems)
+        if "source_hash" in record and (not isinstance(record.get("source_hash"), str) or not re.fullmatch(r"[0-9a-f]{64}", str(record.get("source_hash")))):
+            problems.append(f"{label}.source_hash must be 64 lowercase hex characters")
+    if revision is not None:
+        structure, _ = _read_json(root / "wiki" / "structure.json", "wiki/structure.json")
+        if structure is not None and structure.get("bookRevisionId") != revision:
+            problems.append("structure and evidence bookRevisionId values differ")
     return sorted(set(problems))
 
 
 def citation_health(root: Path) -> list[str]:
-    """Validate the optional generated evidence index and visible citation labels."""
+    """Resolve every Grounded v2 evidence URI in Markdown and reject CnEn."""
     problems: list[str] = []
     evidence_path = root / "wiki" / "evidence.json"
+    records: dict[str, Any] = {}
     if evidence_path.is_file():
         try:
             payload = json.loads(evidence_path.read_text(encoding="utf-8"))
-            records = payload.get("evidence", {})
-            if not isinstance(records, dict):
-                return ["wiki/evidence.json evidence must be an object"]
-            for evidence_id, record in records.items():
-                if not isinstance(record, dict):
-                    problems.append(f"evidence record is not an object: {evidence_id}")
-                    continue
-                if not record.get("display_label"):
-                    problems.append(f"evidence record has no display label: {evidence_id}")
-                locator = record.get("locator")
-                if not isinstance(locator, dict) or not locator.get("format"):
-                    problems.append(f"evidence record has no locator: {evidence_id}")
-        except (OSError, ValueError) as error:
-            problems.append(f"wiki/evidence.json is invalid JSON: {error}")
-    for page in (root / "wiki").rglob("*.md") if (root / "wiki").is_dir() else []:
-        if INTERNAL_CITATION_RE.search(page.read_text(encoding="utf-8")):
-            problems.append(f"visible internal citation id in {relative(root, page)}")
+            if isinstance(payload, dict) and isinstance(payload.get("evidence"), dict):
+                records = payload["evidence"]
+        except (OSError, ValueError):
+            pass
+    wiki = root / "wiki"
+    for page in wiki.rglob("*.md") if wiki.is_dir() else []:
+        try:
+            text = page.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for match in ONEBOOKWIKI_EVIDENCE_RE.finditer(text):
+            evidence_id = match.group(1).rstrip(".,;:，。；：")
+            if not EVIDENCE_ID_RE.fullmatch(evidence_id):
+                problems.append(f"invalid Grounded v2 evidence URI in {relative(root, page)}: {evidence_id}")
+            elif evidence_id not in records:
+                problems.append(f"unresolved Grounded v2 evidence URI in {relative(root, page)}: {evidence_id}")
+        if CNEN_RE.search(text):
+            problems.append(f"visible legacy CnEn citation in {relative(root, page)}")
     return sorted(set(problems))
 
 
-def generated_health(root: Path) -> list[str]:
-    """Check generated artifacts and resumable generation state."""
-    problems: list[str] = []
-    artifact_root = root / ".onebookwiki" / "artifacts"
-    book = artifact_root / "book.json"
-    chapter_dir = artifact_root / "chapters"
-    if artifact_root.exists() and not book.is_file():
-        problems.append("generated artifacts missing book.json")
-    if chapter_dir.is_dir():
-        for path in chapter_dir.glob("*.json"):
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as error:
-                problems.append(f"invalid generated artifact {relative(root, path)}: {error}")
-                continue
-            if not value.get("title") or not value.get("executive_summary"):
-                problems.append(f"generated chapter is missing title or summary: {relative(root, path)}")
-            if not value.get("evidence"):
-                problems.append(f"generated chapter has no evidence: {relative(root, path)}")
-            if "Error generating content" in json.dumps(value, ensure_ascii=False):
-                problems.append(f"generated artifact contains an error placeholder: {relative(root, path)}")
-    checkpoint = root / ".onebookwiki" / "checkpoints" / "latest.json"
-    if checkpoint.is_file():
-        try:
-            latest = json.loads(checkpoint.read_text(encoding="utf-8"))
-            run_id = latest.get("run_id")
-            run_path = checkpoint.parent / f"run-{run_id}.json"
-            state = json.loads(run_path.read_text(encoding="utf-8"))
-            for node_id, node in state.get("nodes", {}).items():
-                if node.get("status") in {"failed", "running"}:
-                    problems.append(f"generation node {node_id} is {node.get('status')}")
-        except (OSError, ValueError, TypeError) as error:
-            problems.append(f"invalid generation checkpoint: {error}")
-    usage = root / ".onebookwiki" / "usage.jsonl"
-    if usage.is_file():
-        for line_number, line in enumerate(usage.read_text(encoding="utf-8").splitlines(), 1):
-            try:
-                json.loads(line)
-            except ValueError:
-                problems.append(f"usage.jsonl:{line_number} is invalid JSON")
-    return problems
+def print_section(title: str, values: list[str], quiet: bool = False) -> int:
+    if quiet:
+        return len(values)
+    print(f"## {title}")
+    if values:
+        for value in values:
+            print(f"- {value}")
+    else:
+        print("(none)")
+    print()
+    return len(values)
 
 
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv
-    arguments = list(argv[1:])
-    json_output = "--json" in arguments
-    arguments = [argument for argument in arguments if argument != "--json"]
+    arguments = [argument for argument in argv[1:] if argument != "--json"]
+    json_output = "--json" in argv[1:]
     root = Path(arguments[0]).resolve() if arguments else Path.cwd()
-    if not (root / "wiki").is_dir() or not (root / "raw" / "chapters").is_dir():
-        print(f"expected wiki/ and raw/chapters/ under {root}", file=sys.stderr)
+    if not (root / "raw" / "chapters").is_dir():
+        print(f"expected raw/chapters/ under {root}", file=sys.stderr)
         return 1
-    chapters = chapter_pages(root)
-    evidence_misses: list[str] = []
-    evidence_errors: list[str] = []
-    selected = chapters
-    if len(arguments) > 1:
-        requested = set()
-        for argument in arguments[1:]:
-            path = Path(argument)
-            if not path.is_absolute(): path = root / path
-            if not path.is_file():
-                print(f"warning: file not found: {argument}", file=sys.stderr); continue
-            requested.add(path.resolve())
-        selected = [chapter for chapter in chapters if chapter.path.resolve() in requested]
-    for chapter in selected:
-        misses, errors = evidence_for(chapter, root)
-        evidence_misses.extend(f"{relative(root, chapter.path)}: {value}" for value in misses)
-        evidence_errors.extend(f"{relative(root, chapter.path)}: {value}" for value in errors)
     if not json_output:
         print("# OneBookWiki check\n")
-    evidence_count = print_section("Evidence", evidence_misses + evidence_errors, json_output)
-    order_count = print_section("Chapter order", chapter_order(chapters), json_output)
-    map_count = print_section("Reading map", map_problems(root, chapters), json_output)
-    link_count = print_section("Links", broken_links(root), json_output)
-    coverage_count = print_section("Relationship coverage", relationship_coverage(root, chapters), json_output)
+    raw_count = print_section("Raw chapters", raw_chapter_health(root), json_output)
     rag_count = print_section("RAG index", rag_health(root), json_output)
-    inventory_count = print_section("Unreferenced raw", raw_inventory(root, chapters), json_output)
+    link_count = print_section("Links", broken_links(root), json_output)
+    pdf_count = print_section("PDF structure", pdf_health(root), json_output)
     structure_count = print_section("Wiki structure", structure_health(root), json_output)
-    generated_count = print_section("Generated artifacts", generated_health(root), json_output)
+    evidence_count = print_section("Wiki evidence", evidence_health(root), json_output)
     citation_count = print_section("Citations", citation_health(root), json_output)
-    total = evidence_count + order_count + map_count + link_count + coverage_count + rag_count + inventory_count + structure_count + generated_count + citation_count
+    total = raw_count + rag_count + link_count + pdf_count + structure_count + evidence_count + citation_count
     if json_output:
         print(json.dumps({"total": total, "status": "ok" if total == 0 else "issues"}, ensure_ascii=False))
     else:
         print(f"## Summary\n{total} issue(s)")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))

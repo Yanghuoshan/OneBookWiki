@@ -13,8 +13,8 @@ const sanitizeSchema = {
   },
 };
 
-const citationPattern = /^C\d+E\d+(?!\d)$/;
-const evidenceHrefPattern = /^onebookwiki:\/\/evidence\/C\d+E\d+$/;
+const citationPattern = /^evr-[0-9a-f]{32}$/;
+const evidenceHrefPattern = /^onebookwiki:\/\/evidence\/evr-[0-9a-f]{32}$/;
 
 export function citationUrlTransform(value: string): string {
   return evidenceHrefPattern.test(value) ? value : defaultUrlTransform(value);
@@ -45,7 +45,7 @@ export default function MarkdownReader({ content, evidence, pagePath, pagesByPat
       urlTransform={citationUrlTransform}
       components={{
         a({ href, children, ...props }) {
-          const evidenceMatch = href?.match(/^onebookwiki:\/\/evidence\/(C\d+E\d+)$/);
+          const evidenceMatch = href?.match(/^onebookwiki:\/\/evidence\/(evr-[0-9a-f]{32})$/);
           if (evidenceMatch) return <CitationChip id={evidenceMatch[1]} evidence={evidence} onOpen={onCitation} />;
           const page = linkedPage(href, pagePath, pagesByPath);
           if (page) return <button type="button" className="markdown-link" onClick={() => onPageLink(page)}>{children}</button>;
@@ -55,7 +55,7 @@ export default function MarkdownReader({ content, evidence, pagePath, pagesByPat
           const items = Array.isArray(children) ? children : [children];
           return <p>{items.map((child, index) => {
             if (typeof child !== 'string') return <Fragment key={index}>{child}</Fragment>;
-            const parts = child.split(/(C\d+E\d+)/g);
+            const parts = child.split(/(evr-[0-9a-f]{32})/g);
             return <Fragment key={index}>{parts.map((part, partIndex) => citationPattern.test(part) ? <CitationChip key={partIndex} id={part} evidence={evidence} onOpen={onCitation} /> : part)}</Fragment>;
           })}</p>;
         },

@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
+from onebookwiki.checkpoints import CheckpointStore
+from onebookwiki.evidence_registry import EvidenceRegistryError, register_project
 from onebookwiki.generation import GenerationError, GenerationOptions, generate_wiki as do_generate_wiki, resume_generation
 from onebookwiki.importers import ImportOptions, detect_source_type, import_document
+from onebookwiki.manifest import Manifest
 from onebookwiki.providers import CANONICAL_GENERATION_MAX_OUTPUT_TOKENS, ProviderUnavailable, build_embedder
-from onebookwiki.rendering import render_artifacts
-from onebookwiki.wiki_vector_index import build_wiki_vector_indexes
-from onebookwiki.checkpoints import CheckpointStore
+from onebookwiki.wiki_projection import WikiProjectionError, render_grounded_projection
+from onebookwiki.wiki_vector_index import WikiVectorIndexError, build_wiki_vector_indexes
+from server.database import publish_registry_snapshot
 
 # Use the established index implementations from the CLI package.
 from onebookwiki.cli.ingest_book import index_cloud, index_project
@@ -45,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("source", help="source file: PDF, EPUB, MOBI, AZW, AZW3, TXT, DOC, DOCX, HTML, or HTM")
     parser.add_argument("project_root")
     parser.add_argument("--backend", choices=("lexical", "bge-m3", "modelscope"), default="bge-m3")
+    parser.add_argument("--database", help="Grounded v2 SQLite database path")
+    parser.add_argument("--book-id", type=int, help="numeric book ID in the Grounded v2 database")
     parser.add_argument("--book-title")
     parser.add_argument("--source-format", choices=("PDF", "EPUB", "MOBI", "AZW", "AZW3", "TXT", "DOC", "DOCX", "HTML"), help="override source format detection")
     parser.add_argument("--pages-per-chapter", type=int)
@@ -102,7 +109,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.keep_front_matter and source_format not in {"EPUB", "MOBI", "AZW", "AZW3"}:
         print("--keep-front-matter may only be used with EPUB or DRM-free Kindle input", file=sys.stderr)
         return 1
+    conn: sqlite3.Connection | None = None
     try:
+        release_command = args.resume or not args.dry_run
+        if release_command and (args.database is None or args.book_id is None):
+            raise ValueError("--database and --book-id are required for a non-dry-run full release")
+        if args.database is not None and args.book_id is not None:
+            conn = sqlite3.connect(Path(args.database).resolve(), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
         if args.resume and not args.force:
             print("[1/4] resume: preserving existing imported raw chapters")
         else:
@@ -138,18 +152,44 @@ def main(argv: list[str] | None = None) -> int:
         print("[3/4] generating structured wiki artifacts")
         options = generation_options(args)
         build_progress(f"provider={options.provider}, model={options.model or 'default'}, retries={options.retries}")
-        store = resume_generation(root, options, args.run_id) if args.resume else do_generate_wiki(root, options)
+        if not args.dry_run:
+            snapshot = register_project(root)
+            publish_registry_snapshot(conn, args.book_id, snapshot)
+            manifest = Manifest.load(root)
+            if manifest.book_revision_id != snapshot.book_revision_id:
+                raise GenerationError("generation manifest does not match the registered book revision")
+        store = resume_generation(
+            root,
+            options,
+            args.run_id,
+            knowledge_connection=conn,
+            book_id=args.book_id,
+        ) if args.resume else do_generate_wiki(
+            root,
+            options,
+            knowledge_connection=conn,
+            book_id=args.book_id,
+        )
         print(f"run: {store.run_id}")
         if args.dry_run:
             planned = len(store.data.get("nodes", {}))
             print(f"dry run complete; {planned} generation node(s) planned and no wiki pages rendered")
             return 0
-        print("[4/4] rendering Wikipedia-style Markdown")
-        pages = render_artifacts(root)
+        expected_revision_id = Manifest.load(root).book_revision_id
+        print("[4/4] rendering Grounded v2 Wiki projection")
+        pages = render_grounded_projection(
+            conn, root, args.book_id, expected_revision_id=expected_revision_id
+        )
         print(f"rendered {len(pages)} page(s) under {root / 'wiki'}")
         if args.backend in {"bge-m3", "modelscope"}:
-            wiki_indexes = build_wiki_vector_indexes(root, build_embedder(args.backend))
-            from server.config import agent_policy_snapshot, generation_snapshot
+            wiki_indexes = build_wiki_vector_indexes(
+                conn,
+                root,
+                args.book_id,
+                build_embedder(args.backend),
+                expected_revision_id=expected_revision_id,
+            )
+            from server.config import generation_snapshot
 
             from onebookwiki.providers import GenerationConfig
 
@@ -157,19 +197,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.provider,
                 args.model or GenerationConfig.from_env(args.provider).model,
                 args.max_output_tokens,
-                agent_policy_snapshot(args.backend),
             )
             (root / ".onebookwiki" / "generation-config.json").write_text(
-                __import__("json").dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
+                json.dumps(snapshot, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
             summary = ", ".join(
                 f"{item.layer}: {item.documents} documents/{item.chunks} chunks"
                 for item in wiki_indexes
             )
-            print(f"built rendered-wiki vector layers: {summary}")
+            print(f"built grounded semantic vector layers: {summary}")
         else:
-            print("skipping rendered-wiki vector layers because lexical backend has no semantic embedder")
+            print("skipping grounded semantic vector layers because lexical backend has no semantic embedder")
         if not args.skip_check:
             build_progress("running final consistency check")
             status = check_book(["check_book.py", str(root), "--json"])
@@ -177,11 +216,14 @@ def main(argv: list[str] | None = None) -> int:
             if status:
                 return status
         return 0
-    except (GenerationError, ProviderUnavailable, ValueError, OSError) as error:
+    except (GenerationError, ProviderUnavailable, EvidenceRegistryError, WikiProjectionError, WikiVectorIndexError, ValueError, OSError) as error:
         print(f"build failed: {error}", file=sys.stderr)
         if isinstance(error, GenerationError):
             print("generation checkpoint was saved; correct the provider output or configuration, then rerun with --resume", file=sys.stderr)
         return 1
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

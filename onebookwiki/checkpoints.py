@@ -54,9 +54,24 @@ class CheckpointStore:
         with self._lock:
             return self.data.setdefault("nodes", {}).setdefault(node_id, {"node_id": node_id, "status": "pending", "attempts": 0})
 
-    def reusable(self, node_id: str, input_hash: str, prompt_hash: str, model_hash: str, artifact_path: Path | None = None, artifact_hash: str | None = None) -> bool:
+    def reusable(
+        self,
+        node_id: str,
+        input_hash: str,
+        prompt_hash: str,
+        model_hash: str,
+        artifact_path: Path | None = None,
+        artifact_hash: str | None = None,
+        *,
+        contract_version: str | None = None,
+        book_revision_id: str | None = None,
+    ) -> bool:
         node = self.data.get("nodes", {}).get(node_id, {})
         if node.get("status") != "completed" or node.get("input_hash") != input_hash or node.get("prompt_hash") != prompt_hash or node.get("model_hash") != model_hash:
+            return False
+        if contract_version is not None and node.get("contract_version") != contract_version:
+            return False
+        if book_revision_id is not None and node.get("book_revision_id") != book_revision_id:
             return False
         target = artifact_path or (self.root / node.get("artifact_path", ""))
         if not target.is_file():

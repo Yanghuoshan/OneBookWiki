@@ -5,6 +5,10 @@ export type WikiPage = {
   title: string;
   path: string;
   kind: string;
+  bookRevisionId?: string;
+  statementRevisionIds?: string[];
+  compositionRevisionIds?: string[];
+  evidenceRevisionIds?: string[];
   sourceUnitId?: string;
   sourceTitle?: string;
   sourceKind?: string;
@@ -39,6 +43,9 @@ export type SourceOutlineNode = {
 
 export type WikiStructure = {
   id: string;
+  contractVersion?: 'grounded-v2';
+  projectionStatus?: 'healthy';
+  bookRevisionId?: string;
   title: string;
   description?: string;
   pages: WikiPage[];
@@ -48,6 +55,10 @@ export type WikiStructure = {
 
 export type EvidenceRecord = {
   evidence_id: string;
+  evidenceRevisionId?: string;
+  bookRevisionId?: string;
+  statementRevisionIds?: string[];
+  compositionRevisionIds?: string[];
   chunk_id?: string;
   source_path?: string;
   chapter?: number;
@@ -76,6 +87,9 @@ export type EvidenceRecord = {
 
 export type EvidenceIndex = {
   schema_version?: number;
+  contractVersion?: 'grounded-v2';
+  projectionStatus?: 'healthy';
+  bookRevisionId?: string;
   evidence: Record<string, EvidenceRecord>;
 };
 
@@ -186,6 +200,10 @@ export type ChatTurnStatus = 'queued' | 'retrieving' | 'generating' | 'succeeded
 
 export type ChatCitation = {
   evidence_id: string;
+  evidence_revision_id?: string;
+  book_revision_id?: string;
+  statement_revision_ids?: string[];
+  composition_revision_ids?: string[];
   chunk_id?: string;
   source_path?: string;
   chapter?: number;
@@ -197,6 +215,7 @@ export type ChatCitation = {
 export type ChatTurn = {
   id: string;
   turn_no: number;
+  book_revision_id?: string;
   question: string;
   answer?: string | null;
   status: ChatTurnStatus;
@@ -204,6 +223,9 @@ export type ChatTurn = {
   error_code?: string | null;
   error_message?: string | null;
   citations: ChatCitation[];
+  answer_mode?: 'canonical_passthrough' | 'knowledge_synthesis' | 'raw_synthesis' | null;
+  pinned_revision_status?: 'pending' | 'healthy' | 'stale' | 'invalid';
+  plan_summary?: Record<string, unknown>;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -212,6 +234,7 @@ export type ChatTurn = {
 export type ChatConversation = {
   id: string;
   book_id: number;
+  book_revision_id?: string;
   book_title: string;
   book_phase: BookPhase;
   status: 'active';

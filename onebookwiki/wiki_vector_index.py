@@ -16,9 +16,10 @@ from typing import Any, Iterable, Protocol, Sequence
 
 from .chunking import chunk_text, chunking_profile, count_tokens
 from .markdown import sha256_text
+from .wiki_projection import GroundedWikiProjection, WikiProjectionError, load_grounded_wiki_projection
 
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 BOOK_NAVIGATION = "book_navigation"
 CHAPTER_INTERPRETATION = "chapter_interpretation"
 SEMANTIC_ENTITY = "semantic_entity"
@@ -65,12 +66,6 @@ def _load_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def _citation_ids(text: str) -> set[str]:
-    import re
-
-    return set(re.findall(r"\bC\d+E\d+\b", text))
-
-
 def _flatten_outline(nodes: Iterable[Any], ancestors: tuple[str, ...] = ()) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for raw in nodes:
@@ -114,9 +109,16 @@ class LayerBuildResult:
 class WikiVectorIndex:
     """Read and incrementally build typed semantic indexes for rendered wiki files."""
 
-    def __init__(self, root: Path, embedder: VectorEmbedder):
+    def __init__(
+        self,
+        root: Path,
+        embedder: VectorEmbedder,
+        *,
+        projection: GroundedWikiProjection | None = None,
+    ):
         self.root = root.resolve()
         self.embedder = embedder
+        self.projection = projection
         self.directory = self.root / ".onebookwiki" / "retrieval"
         self.manifest_path = self.directory / "wiki-vectors.json"
         self.vectors_path = self.directory / "wiki-vectors-data.json"
@@ -160,7 +162,7 @@ class WikiVectorIndex:
         }
         if not pages:
             raise WikiVectorIndexError("wiki structure contains no pages")
-        return structure, pages, dict(evidence.get("evidence") or {})
+        return structure, pages, evidence
 
     def _document_chunks(
         self,
@@ -205,8 +207,25 @@ class WikiVectorIndex:
         return output
 
     def _documents(self) -> dict[str, list[dict[str, Any]]]:
-        """Load all indexable rendered files into independently typed documents."""
-        structure, pages, evidence = self._page_records()
+        """Build typed documents from the validated knowledge projection.
+
+        Rendered Markdown remains presentation-only.  Only routing metadata is
+        read from ``structure.json``; vector text and provenance are taken from
+        immutable statement/composition records.
+        """
+        if self.projection is None:
+            raise WikiVectorIndexError("a validated Grounded v2 projection is required")
+        projection = self.projection
+        structure, pages, evidence_index = self._page_records()
+        if (
+            structure.get("contractVersion") != "grounded-v2"
+            or structure.get("projectionStatus") != "healthy"
+            or structure.get("bookRevisionId") != projection.book_revision_id
+            or evidence_index.get("contractVersion") != "grounded-v2"
+            or evidence_index.get("projectionStatus") != "healthy"
+            or evidence_index.get("bookRevisionId") != projection.book_revision_id
+        ):
+            raise WikiVectorIndexError("wiki projection metadata does not match the healthy active revision")
         wiki_root = self.root / "wiki"
         outline = _flatten_outline(structure.get("sourceOutline") or [])
         outline_by_page: dict[str, list[str]] = {}
@@ -215,37 +234,63 @@ class WikiVectorIndex:
                 if isinstance(page_id, str):
                     outline_by_page.setdefault(page_id, []).append(str(node["id"]))
 
-        source = _load_json(self.root / ".onebookwiki" / "source.json", ".onebookwiki/source.json")
-        unit_by_chapter = {
-            int(item.get("chapter", 0) or 0): str(item.get("source_unit_id", ""))
-            for item in list(dict(source.get("source_structure") or {}).get("units") or [])
-            if isinstance(item, dict) and int(item.get("chapter", 0) or 0)
-        }
-        evidence_to_units: dict[str, str] = {}
-        evidence_to_chapters: dict[str, int] = {}
-        for evidence_id, record in evidence.items():
-            if not isinstance(record, dict):
+        unit_by_chapter: dict[int, str] = {}
+        for page in pages.values():
+            try:
+                chapter = int(page.get("chapter", 0) or 0)
+            except (TypeError, ValueError):
                 continue
-            chapter = int(record.get("chapter", 0) or 0)
-            evidence_to_units[str(evidence_id)] = str(
-                record.get("source_unit_id") or record.get("sourceUnitId") or unit_by_chapter.get(chapter, "")
-            )
-            evidence_to_chapters[str(evidence_id)] = chapter
+            if chapter:
+                unit_by_chapter[chapter] = str(page.get("sourceUnitId", ""))
+        evidence_to_units = {
+            evidence_id: unit_by_chapter.get(record.chapter, "")
+            for evidence_id, record in projection.evidence.items()
+        }
 
         layers: dict[str, list[dict[str, Any]]] = {name: [] for name in LAYER_NAMES}
-        for page_id, page in sorted(pages.items()):
+        page_for_composition = {
+            str(composition_id): (page_id, page)
+            for page_id, page in pages.items()
+            for composition_id in page.get("compositionRevisionIds", [])
+            if isinstance(composition_id, str)
+        }
+        for composition in projection.rendered_compositions:
+            route = page_for_composition.get(composition.composition_revision_id)
+            if route is None:
+                raise WikiVectorIndexError(
+                    f"projection composition has no static page route: {composition.composition_revision_id}"
+                )
+            page_id, page = route
             kind = str(page.get("kind", ""))
             relative = str(page.get("path", ""))
-            if kind not in {"book", "index", "reading_unit", "theme", "concept", "argument"}:
-                continue
-            path = _safe_file(self.root, f"wiki/{relative}", wiki_root)
-            text = path.read_text(encoding="utf-8")
+            if kind not in {"reading_unit", "knowledge"}:
+                raise WikiVectorIndexError(f"projection composition has an invalid page kind: {page_id}")
+            _safe_file(self.root, f"wiki/{relative}", wiki_root)
+            statement_text = "\n".join(
+                projection.statements[statement_id].semantic_text
+                for statement_id in composition.statement_revision_ids
+            )
+            text = "\n\n".join(part for part in (composition.rendering_text or "", statement_text) if part).strip()
+            if not text:
+                raise WikiVectorIndexError(f"projection composition has no semantic text: {page_id}")
+            chapter = int(page.get("chapter", 0) or 0)
             metadata = {
                 "page_id": page_id,
                 "page_kind": kind,
                 "title": str(page.get("title", "")),
-                "chapter": int(page.get("chapter", 0) or 0),
+                "book_revision_id": projection.book_revision_id,
+                "composition_revision_ids": [composition.composition_revision_id],
+                "statement_revision_ids": list(composition.statement_revision_ids),
+                "evidence_revision_ids": list(composition.evidence_revision_ids),
+                "canonical_key": composition.canonical_key,
+                "chapter": chapter,
+                "chapters": list(composition.chapters),
                 "source_unit_id": str(page.get("sourceUnitId", "")),
+                "source_unit_ids": sorted({
+                    evidence_to_units[item]
+                    for item in composition.evidence_revision_ids
+                    if evidence_to_units.get(item)
+                }),
                 "part": int(page.get("part", 0) or 0),
                 "part_count": int(page.get("partCount", 0) or 0),
                 "breadcrumb": [str(item) for item in page.get("breadcrumb", [])],
@@ -253,63 +298,69 @@ class WikiVectorIndex:
                 "related_pages": [str(item) for item in page.get("relatedPages", [])],
                 "outline_node_ids": outline_by_page.get(page_id, []),
             }
-            document_id = f"page:{page_id}"
-            relative_path = f"wiki/{relative}"
-            if kind in {"book", "index"}:
-                layers[BOOK_NAVIGATION].append({
-                    "document_id": document_id,
-                    "path": relative_path,
-                    "text": text,
-                    "metadata": metadata,
-                    "profile": (180, 20, 240),
-                })
-            elif kind == "reading_unit":
-                layers[CHAPTER_INTERPRETATION].append({
-                    "document_id": document_id,
-                    "path": relative_path,
-                    "text": text,
-                    "metadata": metadata,
-                    "profile": (180, 20, 240),
-                })
+            document = {
+                "document_id": f"composition:{composition.composition_revision_id}",
+                "path": f"wiki/{relative}",
+                "text": text,
+                "metadata": metadata,
+                "profile": (180, 20, 240),
+            }
+            if kind == "reading_unit":
+                layers[CHAPTER_INTERPRETATION].append(document)
             else:
-                # Rendered prose uses display labels, so page metadata is the
-                # canonical citation-route source. The text scan remains for
-                # compatibility with older rendered books that retained CnEn.
-                citation_ids = {
-                    *[str(item) for item in page.get("evidenceIds", []) if str(item)],
-                    *_citation_ids(text),
-                }
-                unit_ids = sorted({evidence_to_units[item] for item in citation_ids if evidence_to_units.get(item)})
-                chapters = sorted({evidence_to_chapters[item] for item in citation_ids if evidence_to_chapters.get(item)})
-                metadata["evidence_ids"] = sorted(citation_ids)
-                metadata["source_unit_ids"] = unit_ids
-                metadata["chapters"] = chapters
-                layers[SEMANTIC_ENTITY].append({
-                    "document_id": document_id,
-                    "path": relative_path,
-                    "text": text,
-                    "metadata": metadata,
-                    "profile": (180, 20, 240),
-                })
+                layers[SEMANTIC_ENTITY].append(document)
 
-        # Chapter interpretation coverage is a hard build invariant: every
-        # rendered wiki/chapters Markdown file must have exactly one typed
-        # document, and no reading-unit metadata may point somewhere else.
-        chapter_root = wiki_root / "chapters"
-        rendered_chapter_paths = {
-            path.relative_to(wiki_root).as_posix()
-            for path in chapter_root.glob("*.md")
-            if path.is_file()
+        # Book navigation receives only canonical keys/routing labels.  It does
+        # not index evidence excerpts or rendered Markdown.
+        for page_id, page in sorted(pages.items()):
+            if str(page.get("kind", "")) not in {"book", "index"}:
+                continue
+            composition_ids = [
+                item for item in page.get("compositionRevisionIds", [])
+                if isinstance(item, str) and item in projection.compositions
+            ]
+            canonical = [projection.compositions[item].canonical_key for item in composition_ids]
+            card = "\n".join([
+                str(page.get("title", "")),
+                str(page.get("kind", "")),
+                *canonical,
+                *[str(item) for item in page.get("relatedPages", [])],
+            ]).strip()
+            if not card:
+                continue
+            layers[BOOK_NAVIGATION].append({
+                "document_id": f"page:{page_id}",
+                "path": f"wiki/{page.get('path', '')}",
+                "text": card,
+                "metadata": {
+                    "page_id": page_id,
+                    "page_kind": str(page.get("kind", "")),
+                    "title": str(page.get("title", "")),
+                    "book_revision_id": projection.book_revision_id,
+                    "composition_revision_ids": composition_ids,
+                    "related_pages": [str(item) for item in page.get("relatedPages", [])],
+                    "outline_node_ids": outline_by_page.get(page_id, []),
+                },
+                "profile": (160, 0, 200),
+            })
+
+        # Every chapter-scoped rendered composition must have exactly one
+        # structured semantic document.  The invariant is based on projection
+        # routes, never on parsing Markdown files in ``wiki/chapters``.
+        expected_chapter_documents = {
+            f"composition:{item.composition_revision_id}"
+            for item in projection.rendered_compositions
+            if len(item.chapters) == 1
         }
-        indexed_chapter_paths = {
-            str(item["path"])[len("wiki/"):]
+        indexed_chapter_documents = {
+            str(item["document_id"])
             for item in layers[CHAPTER_INTERPRETATION]
         }
-        if rendered_chapter_paths != indexed_chapter_paths:
-            missing = sorted(rendered_chapter_paths - indexed_chapter_paths)
-            extra = sorted(indexed_chapter_paths - rendered_chapter_paths)
+        if expected_chapter_documents != indexed_chapter_documents:
+            missing = sorted(expected_chapter_documents - indexed_chapter_documents)
+            extra = sorted(indexed_chapter_documents - expected_chapter_documents)
             raise WikiVectorIndexError(
-                "chapter interpretation metadata does not exactly cover wiki/chapters/*.md "
+                "chapter composition metadata does not exactly cover the grounded projection "
                 f"(missing={missing}, extra={extra})"
             )
 
@@ -418,7 +469,13 @@ class WikiVectorIndex:
             results.append(LayerBuildResult(layer, len(document_records), len(layer_chunks), changed, reused))
 
         vectors = {key: value for key, value in vectors.items() if key in live_vector_ids}
-        manifest = {"version": INDEX_VERSION, "identity": identity, "layers": fresh_layers}
+        manifest = {
+            "version": INDEX_VERSION,
+            "identity": identity,
+            "contractVersion": "grounded-v2",
+            "bookRevisionId": self.projection.book_revision_id if self.projection else None,
+            "layers": fresh_layers,
+        }
         self._save(manifest, vectors)
         return results
 
@@ -429,6 +486,13 @@ class WikiVectorIndex:
         identity = _identity(self.embedder)
         if manifest.get("identity") != identity:
             raise WikiVectorIndexError("wiki vector index identity does not match the configured embedding model")
+        if self.projection is None:
+            raise WikiVectorIndexError("a validated Grounded v2 projection is required")
+        if (
+            manifest.get("contractVersion") != "grounded-v2"
+            or manifest.get("bookRevisionId") != self.projection.book_revision_id
+        ):
+            raise WikiVectorIndexError("wiki vector index does not match the healthy active revision")
         value = manifest.get("layers", {}).get(layer)
         if not isinstance(value, dict) or not value.get("chunks"):
             raise WikiVectorIndexError(f"wiki vector layer is missing or empty: {layer}")
@@ -483,27 +547,25 @@ class WikiVectorIndex:
         return [item for _, item in scored[: min(limit, 12)]]
 
     def health(self) -> dict[str, Any]:
-        """Return index coverage, including strict chapter-page coverage diagnostics."""
+        """Return revision-aware index coverage diagnostics."""
         manifest = self._load_manifest()
         layers = manifest.get("layers", {})
         chapter_layer = dict(layers.get(CHAPTER_INTERPRETATION) or {})
-        expected = set()
-        rendered_files: set[str] = set()
-        try:
-            _, pages, _ = self._page_records()
-            expected = {f"page:{page_id}" for page_id, page in pages.items() if page.get("kind") == "reading_unit"}
-            rendered_files = {
-                f"wiki/{path.relative_to(self.root / 'wiki').as_posix()}"
-                for path in (self.root / "wiki" / "chapters").glob("*.md")
-                if path.is_file()
-            }
-        except WikiVectorIndexError:
-            pass
+        expected = {
+            f"composition:{item.composition_revision_id}"
+            for item in self.projection.rendered_compositions
+            if len(item.chapters) == 1
+        } if self.projection else set()
         indexed_documents = dict(chapter_layer.get("documents") or {})
         indexed = set(indexed_documents)
-        indexed_files = {str(item.get("path", "")) for item in indexed_documents.values() if isinstance(item, dict)}
+        revision_matches = bool(
+            self.projection
+            and manifest.get("contractVersion") == "grounded-v2"
+            and manifest.get("bookRevisionId") == self.projection.book_revision_id
+        )
         return {
             "identity": manifest.get("identity", {}),
+            "book_revision_id": manifest.get("bookRevisionId"),
             "layers": {
                 name: {
                     "documents": len(dict((layers.get(name) or {}).get("documents") or {})),
@@ -515,14 +577,23 @@ class WikiVectorIndex:
             "chapter_documents_indexed": len(indexed),
             "chapter_documents_missing": sorted(expected - indexed),
             "chapter_documents_extra": sorted(indexed - expected),
-            "chapter_files_expected": len(rendered_files),
-            "chapter_files_indexed": len(indexed_files),
-            "chapter_files_missing": sorted(rendered_files - indexed_files),
-            "chapter_files_extra": sorted(indexed_files - rendered_files),
-            "healthy": bool(expected) and expected == indexed and rendered_files == indexed_files,
+            "healthy": revision_matches and bool(expected) and expected == indexed,
         }
 
 
-def build_wiki_vector_indexes(root: Path, embedder: VectorEmbedder) -> list[LayerBuildResult]:
-    """Build all rendered wiki semantic layers after a successful render."""
-    return WikiVectorIndex(root, embedder).build()
+def build_wiki_vector_indexes(
+    conn,
+    root: Path,
+    book_id: int,
+    embedder: VectorEmbedder,
+    *,
+    expected_revision_id: str | None = None,
+) -> list[LayerBuildResult]:
+    """Build structured semantic vectors for one healthy active revision."""
+    try:
+        projection = load_grounded_wiki_projection(
+            conn, root, book_id, expected_revision_id=expected_revision_id
+        )
+    except WikiProjectionError as exc:
+        raise WikiVectorIndexError(str(exc)) from exc
+    return WikiVectorIndex(root, embedder, projection=projection).build()

@@ -31,6 +31,13 @@ export default function EvidenceCard({ record, cardId, highlighted = false }: Pr
         {title && title !== label && <span className="evidence-card-title">{title}</span>}
       </div>
       {location && <p className="evidence-card-location">{location}</p>}
+      {(record.statementRevisionIds?.length || record.compositionRevisionIds?.length) && (
+        <p className="evidence-card-location">
+          {record.statementRevisionIds?.length ? `Statements: ${record.statementRevisionIds.length}` : ''}
+          {record.statementRevisionIds?.length && record.compositionRevisionIds?.length ? ' · ' : ''}
+          {record.compositionRevisionIds?.length ? `Compositions: ${record.compositionRevisionIds.length}` : ''}
+        </p>
+      )}
       {hasLineRange ? (
         <div className="evidence-lines evidence-lines--compact" aria-label="Evidence excerpt with source line numbers">
           {excerptLines.map((text, index) => {
