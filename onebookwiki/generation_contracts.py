@@ -372,6 +372,8 @@ def validate_grounded_payload(
     compositions_raw = item["compositions"]
     if not isinstance(statements_raw, list) or not isinstance(compositions_raw, list):
         raise ContractError(f"{stage}.statements and {stage}.compositions must be arrays")
+    upstream_statements = upstream_statement_ids or set()
+    upstream_compositions = upstream_composition_ids or set()
     statements: list[dict[str, Any]] = []
     statement_ids: set[str] = set()
     evidence_ids: set[str] = set()
@@ -379,6 +381,10 @@ def validate_grounded_payload(
         normalized = validate_statement_draft(statement, f"{stage}.statements[{index}]", allowed_evidence=allowed_evidence)
         if normalized["draft_id"] in statement_ids:
             raise ContractError(f"duplicate statement draft_id: {normalized['draft_id']}")
+        if normalized["draft_id"] in upstream_statements:
+            raise ContractError(
+                f"statement draft_id reuses an upstream draft_id: {normalized['draft_id']}"
+            )
         statement_ids.add(normalized["draft_id"])
         evidence_ids.update(item["evidence_revision_id"] for item in normalized["supports"])
         statements.append(normalized)
@@ -395,6 +401,10 @@ def validate_grounded_payload(
         )
         if normalized["draft_id"] in composition_ids:
             raise ContractError(f"duplicate composition draft_id: {normalized['draft_id']}")
+        if normalized["draft_id"] in upstream_compositions:
+            raise ContractError(
+                f"composition draft_id reuses an upstream draft_id: {normalized['draft_id']}"
+            )
         composition_ids.add(normalized["draft_id"])
         compositions.append(normalized)
     if not statements and not compositions:

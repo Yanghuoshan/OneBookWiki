@@ -887,7 +887,7 @@ def _persist_generated_node(
     upstream_statement_ids: set[str] | None = None,
     upstream_composition_ids: set[str] | None = None,
     dependencies: list[str] | None = None,
-) -> None:
+) -> tuple[set[str], set[str]]:
     normalized, evidence_ids = _parse_and_validate_node_response(
         root,
         prompt,
@@ -927,6 +927,9 @@ def _persist_generated_node(
         evidence_revision_ids=evidence_ids,
         dependencies=dependencies,
     )
+    new_statement_ids = {item["draft_id"] for item in normalized["statements"]}
+    new_composition_ids = {item["draft_id"] for item in normalized["compositions"]}
+    return new_statement_ids, new_composition_ids
 
 
 async def _generate_chapter_node(
@@ -944,6 +947,8 @@ async def _generate_chapter_node(
     options: GenerationOptions,
     store: CheckpointStore,
     semaphore: asyncio.Semaphore,
+    statement_registry: set[str],
+    composition_registry: set[str],
 ) -> tuple[int, str] | None:
     node_id = f"chapter:{number}"
     prompt, input_hash, model_hash = _chapter_prompt_and_identity(
@@ -967,7 +972,10 @@ async def _generate_chapter_node(
         except GenerationError as exc:
             return number, f"LLM exhausted retries ({exc})"
     try:
-        _persist_generated_node(
+        # Reads statement_registry/composition_registry and appends this
+        # chapter's own new draft_ids without any intervening await, so
+        # concurrent sibling chapters never interleave mid check-and-insert.
+        new_statement_ids, new_composition_ids = _persist_generated_node(
             root=root,
             store=store,
             node_id=node_id,
@@ -982,9 +990,13 @@ async def _generate_chapter_node(
             context=_chapter_context(number, title, source_unit),
             options=options,
             chapter=number,
+            upstream_statement_ids=statement_registry,
+            upstream_composition_ids=composition_registry,
         )
     except GenerationError as exc:
         return number, f"structured output validation failed ({exc})"
+    statement_registry.update(new_statement_ids)
+    composition_registry.update(new_composition_ids)
     _progress(options, f"chapter {position}/{total} ({number}): completed")
     return None
 
@@ -1004,6 +1016,11 @@ def generate_chapters(
     if not selected_numbers:
         raise GenerationError("index has no reading units")
 
+    # Shared across every chapter in this run so independently generated
+    # reading units cannot pick the same draft_id (see synthesize_book for
+    # the analogous rollup/book registry).
+    statement_registry: set[str] = set()
+    composition_registry: set[str] = set()
     pending: list[dict[str, Any]] = []
     for position, number in enumerate(selected_numbers, 1):
         chunks = _bounded(
@@ -1048,6 +1065,15 @@ def generate_chapters(
             book_revision_id=manifest.book_revision_id,
             evidence=evidence_map,
         ):
+            reused = _read_artifact(
+                artifact,
+                stage="chapter",
+                book_revision_id=manifest.book_revision_id,
+                evidence=evidence_map,
+            )
+            reused_statements, reused_compositions = _draft_ids(reused["draft"])
+            statement_registry.update(reused_statements)
+            composition_registry.update(reused_compositions)
             _progress(options, f"chapter {number}: reused existing v2 artifact")
             continue
         if options.dry_run:
@@ -1097,6 +1123,8 @@ def generate_chapters(
                     options=options,
                     store=store,
                     semaphore=semaphore,
+                    statement_registry=statement_registry,
+                    composition_registry=composition_registry,
                 )
                 for item in pending
             ]
@@ -1136,6 +1164,16 @@ def _load_chapter_artifacts(
     return values
 
 
+def _draft_ids(draft: Mapping[str, Any]) -> tuple[set[str], set[str]]:
+    statement_ids = {
+        str(item["draft_id"]) for item in draft.get("statements", [])
+    }
+    composition_ids = {
+        str(item["draft_id"]) for item in draft.get("compositions", [])
+    }
+    return statement_ids, composition_ids
+
+
 def _chapter_card(envelope: Mapping[str, Any]) -> dict[str, Any]:
     context = dict(envelope["provenance"].get("context") or {})
     return {
@@ -1170,6 +1208,8 @@ def _generate_stage(
     evidence: Mapping[str, dict[str, Any]],
     context: Mapping[str, Any],
     dependencies: list[str],
+    upstream_statement_ids: set[str] | None = None,
+    upstream_composition_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     input_hash = digest(
         {
@@ -1227,6 +1267,8 @@ def _generate_stage(
         context=context,
         options=options,
         dependencies=dependencies,
+        upstream_statement_ids=upstream_statement_ids,
+        upstream_composition_ids=upstream_composition_ids,
     )
     return _read_artifact(
         artifact,
@@ -1276,6 +1318,18 @@ def synthesize_book(
     rollup_size = max(1, options.rollup_size)
     rollups: list[dict[str, Any]] = []
     rollup_nodes: list[str] = []
+
+    # Seeded from every chapter draft_id so a rollup can never mint an id
+    # that already exists upstream; each completed rollup's own new ids are
+    # folded back in below so later rollups (and the book stage) see them
+    # too. The rollup loop below runs sequentially, so no locking is needed.
+    statement_registry: set[str] = set()
+    composition_registry: set[str] = set()
+    for item in chapters:
+        chapter_statements, chapter_compositions = _draft_ids(item["draft"])
+        statement_registry.update(chapter_statements)
+        composition_registry.update(chapter_compositions)
+
     for start in range(0, len(cards), rollup_size):
         group = cards[start : start + rollup_size]
         chapter_numbers = {int(item["chapter"]) for item in group}
@@ -1310,9 +1364,14 @@ def synthesize_book(
                 "chapters": sorted(chapter_numbers),
             },
             dependencies=[f"chapter:{number}" for number in sorted(chapter_numbers)],
+            upstream_statement_ids=statement_registry,
+            upstream_composition_ids=composition_registry,
         )
         if value is not None:
             rollups.append(value)
+            rollup_statements, rollup_compositions = _draft_ids(value["draft"])
+            statement_registry.update(rollup_statements)
+            composition_registry.update(rollup_compositions)
 
     title = _book_title(root)
     rollup_cards = [
@@ -1342,6 +1401,8 @@ def synthesize_book(
         evidence=evidence,
         context={"title": title},
         dependencies=rollup_nodes,
+        upstream_statement_ids=statement_registry,
+        upstream_composition_ids=composition_registry,
     )
     store.save()
     return store
