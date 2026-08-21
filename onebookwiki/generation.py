@@ -477,6 +477,8 @@ def _read_artifact(
     stage: str,
     book_revision_id: str,
     evidence: Mapping[str, Any],
+    upstream_statement_ids: set[str] | None = None,
+    upstream_composition_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -489,6 +491,8 @@ def _read_artifact(
         stage=stage,
         book_revision_id=book_revision_id,
         evidence=evidence,
+        upstream_statement_ids=upstream_statement_ids,
+        upstream_composition_ids=upstream_composition_ids,
     )
 
 
@@ -514,6 +518,8 @@ def _artifact_reusable(
     stage: str,
     book_revision_id: str,
     evidence: Mapping[str, Any],
+    upstream_statement_ids: set[str] | None = None,
+    upstream_composition_ids: set[str] | None = None,
 ) -> bool:
     if not store.reusable(
         node_id,
@@ -531,6 +537,8 @@ def _artifact_reusable(
             stage=stage,
             book_revision_id=book_revision_id,
             evidence=evidence,
+            upstream_statement_ids=upstream_statement_ids,
+            upstream_composition_ids=upstream_composition_ids,
         )
     except GenerationError:
         return False
@@ -1064,12 +1072,16 @@ def generate_chapters(
             stage="chapter",
             book_revision_id=manifest.book_revision_id,
             evidence=evidence_map,
+            upstream_statement_ids=statement_registry,
+            upstream_composition_ids=composition_registry,
         ):
             reused = _read_artifact(
                 artifact,
                 stage="chapter",
                 book_revision_id=manifest.book_revision_id,
                 evidence=evidence_map,
+                upstream_statement_ids=statement_registry,
+                upstream_composition_ids=composition_registry,
             )
             reused_statements, reused_compositions = _draft_ids(reused["draft"])
             statement_registry.update(reused_statements)
@@ -1230,12 +1242,16 @@ def _generate_stage(
         stage=stage,
         book_revision_id=book_revision_id,
         evidence=evidence,
+        upstream_statement_ids=upstream_statement_ids,
+        upstream_composition_ids=upstream_composition_ids,
     ):
         return _read_artifact(
             artifact,
             stage=stage,
             book_revision_id=book_revision_id,
             evidence=evidence,
+            upstream_statement_ids=upstream_statement_ids,
+            upstream_composition_ids=upstream_composition_ids,
         )
     if options.dry_run:
         store.node(node_id).update(
@@ -1275,6 +1291,8 @@ def _generate_stage(
         stage=stage,
         book_revision_id=book_revision_id,
         evidence=evidence,
+        upstream_statement_ids=upstream_statement_ids,
+        upstream_composition_ids=upstream_composition_ids,
     )
 
 
@@ -1416,30 +1434,44 @@ def _all_v2_artifacts(
     artifacts: list[dict[str, Any]] = []
     chapter_dir = root / ".onebookwiki" / "artifacts" / "chapters"
     rollup_dir = root / ".onebookwiki" / "artifacts" / "rollups"
+
+    # Rebuild the same upstream registries the generation stages used, so a
+    # composition that legitimately references an earlier stage's draft_id
+    # re-validates the same way here as it did when it was written.
+    statement_registry: set[str] = set()
+    composition_registry: set[str] = set()
     for path in sorted(chapter_dir.glob("*.json")) if chapter_dir.is_dir() else []:
-        artifacts.append(
-            _read_artifact(
-                path,
-                stage="chapter",
-                book_revision_id=book_revision_id,
-                evidence=evidence,
-            )
+        chapter_artifact = _read_artifact(
+            path,
+            stage="chapter",
+            book_revision_id=book_revision_id,
+            evidence=evidence,
         )
+        artifacts.append(chapter_artifact)
+        chapter_statements, chapter_compositions = _draft_ids(chapter_artifact["draft"])
+        statement_registry.update(chapter_statements)
+        composition_registry.update(chapter_compositions)
     for path in sorted(rollup_dir.glob("*.json")) if rollup_dir.is_dir() else []:
-        artifacts.append(
-            _read_artifact(
-                path,
-                stage="rollup",
-                book_revision_id=book_revision_id,
-                evidence=evidence,
-            )
+        rollup_artifact = _read_artifact(
+            path,
+            stage="rollup",
+            book_revision_id=book_revision_id,
+            evidence=evidence,
+            upstream_statement_ids=statement_registry,
+            upstream_composition_ids=composition_registry,
         )
+        artifacts.append(rollup_artifact)
+        rollup_statements, rollup_compositions = _draft_ids(rollup_artifact["draft"])
+        statement_registry.update(rollup_statements)
+        composition_registry.update(rollup_compositions)
     artifacts.append(
         _read_artifact(
             root / ".onebookwiki" / "artifacts" / "book.json",
             stage="book",
             book_revision_id=book_revision_id,
             evidence=evidence,
+            upstream_statement_ids=statement_registry,
+            upstream_composition_ids=composition_registry,
         )
     )
     return artifacts
