@@ -1560,16 +1560,17 @@ def publish_generated_knowledge(
 def write_generation_snapshot(
     root: Path, options: GenerationOptions
 ) -> None:
-    from server.config import generation_snapshot
+    from server.config import generation_config_hash
 
     model = options.model or GenerationConfig.from_env(options.provider).model
-    snapshot = generation_snapshot(
-        options.provider,
-        model,
-        options.max_output_tokens,
-    )
-    snapshot["contract_version"] = CONTRACT_VERSION
-    snapshot["artifact_schema_version"] = ARTIFACT_SCHEMA_VERSION
+    snapshot: dict[str, object] = {
+        "provider": options.provider,
+        "model": model,
+        "max_output_tokens": int(options.max_output_tokens),
+        "contract_version": CONTRACT_VERSION,
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+    }
+    snapshot["config_hash"] = generation_config_hash(snapshot)
     target = root / ".onebookwiki" / "generation-config.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
